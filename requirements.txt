@@ -6,3 +6,4 @@ openai>=1.14.0
 anthropic>=0.21.0
 numpy
 python-dotenv>=1.0.1
+pdfplumber>=0.11.0
