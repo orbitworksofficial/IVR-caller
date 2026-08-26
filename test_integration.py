@@ -60,10 +60,10 @@ async def test_flow():
         {"role": "user", "content": user_query}
     ]
     
-    # 4. Generate Completion using Groq
-    print("Calling model (groq/compound-mini)...")
+    # 4. Generate Completion using OpenAI
+    print("Calling model (gpt-5.6-luna)...")
     try:
-        response = await provider.generate(messages, model="groq/compound-mini")
+        response = await provider.generate(messages, model="gpt-5.6-luna")
         print("\nModel Response:")
         print(response["text"])
         
@@ -76,4 +76,5 @@ async def test_flow():
 
 if __name__ == "__main__":
     asyncio.run(test_flow())
+
 
