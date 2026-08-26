@@ -24,13 +24,6 @@ async def test_flow():
     personality = "You are a helpful customer support agent for Orbit Works. We offer custom software dev."
     retrieved_knowledge = "Orbit Works software development services start at $5,000. Operating hours are 9 AM to 5 PM."
     
-    # Compile prompt
-    system_prompt = compile_system_prompt(
-        business_name=business_name,
-        business_context=personality,
-        retrieved_knowledge=retrieved_knowledge
-    )
-    
     # User query
     user_query = "How much do your services cost?"
     print(f"\nUser Query: {user_query}")
@@ -40,6 +33,28 @@ async def test_flow():
         print("Input blocked by guardrails.")
         return
         
+    # Generate live embeddings (Proves embedding function is wired in)
+    print("Generating query embedding...")
+    embedding = await provider.embed(user_query)
+    print(f"Generated Embedding successfully! Vector size: {len(embedding)}")
+    
+    # Check grounding relevance score threshold (exercises meets_grounding_threshold)
+    mock_retrieved_chunks = [
+        {"content": retrieved_knowledge, "score": 0.85}
+    ]
+    if not guardrails.meets_grounding_threshold(mock_retrieved_chunks):
+        print("Ungrounded search. Abstaining from answering.")
+        return
+    else:
+        print("Grounding threshold check passed!")
+        
+    # Compile prompt
+    system_prompt = compile_system_prompt(
+        business_name=business_name,
+        business_context=personality,
+        retrieved_knowledge=retrieved_knowledge
+    )
+    
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_query}
@@ -61,3 +76,4 @@ async def test_flow():
 
 if __name__ == "__main__":
     asyncio.run(test_flow())
+

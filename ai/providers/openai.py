@@ -76,3 +76,24 @@ class OpenAIProvider(LLMProvider):
                 "total_tokens": response.usage.total_tokens
             }
         }
+
+    async def embed(self, text: str, **kwargs) -> List[float]:
+        model = kwargs.get("model", "text-embedding-3-small")
+        
+        # If using Groq (which doesn't host embeddings), generate a deterministic mock vector to prevent dev crashes
+        if self.base_url and "groq.com" in self.base_url:
+            import hashlib
+            import random
+            hash_val = int(hashlib.md5(text.encode("utf-8")).hexdigest(), 16)
+            random.seed(hash_val)
+            vector = [random.uniform(-1, 1) for _ in range(1536)]
+            norm = sum(x**2 for x in vector)**0.5
+            return [x / norm for x in vector]
+
+        response = await self.client.embeddings.create(
+            model=model,
+            input=text,
+            **{k: v for k, v in kwargs.items() if k not in ["model"]}
+        )
+        return response.data[0].embedding
+

@@ -46,3 +46,18 @@ class LLMProvider(ABC):
             A dictionary with the resolved tool call arguments or content.
         """
         pass
+
+    @abstractmethod
+    async def embed(self, text: str, **kwargs) -> List[float]:
+        """
+        Generate embedding vector for a given text.
+
+        Args:
+            text: Input string.
+            **kwargs: Additional parameters.
+
+        Returns:
+            List of floats representing the embedding vector.
+        """
+        pass
+
