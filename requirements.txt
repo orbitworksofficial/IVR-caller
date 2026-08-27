@@ -7,3 +7,4 @@ anthropic>=0.21.0
 numpy
 python-dotenv>=1.0.1
 pdfplumber>=0.11.0
+sentence-transformers>=3.0.0  # local embeddings for dev (no API key needed)

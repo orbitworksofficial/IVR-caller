@@ -78,13 +78,41 @@ class OpenAIProvider(LLMProvider):
         }
 
     async def embed(self, text: str, **kwargs) -> List[float]:
+        """
+        Generates an embedding vector for the given text.
+        - Production: uses text-embedding-3-small via OpenAI API.
+        - Development: set EMBEDDING_PROVIDER=local in .env to use a free
+          local sentence-transformers model (no API key needed).
+        """
+        if os.getenv("EMBEDDING_PROVIDER") == "local":
+            return await self._embed_local(text)
+
         model = kwargs.get("model", "text-embedding-3-small")
-        
         response = await self.client.embeddings.create(
             model=model,
             input=text,
             **{k: v for k, v in kwargs.items() if k not in ["model"]}
         )
         return response.data[0].embedding
+
+    async def _embed_local(self, text: str) -> List[float]:
+        """
+        Local embedding using sentence-transformers (all-MiniLM-L6-v2).
+        Produces 384-dimensional vectors — sufficient for dev/testing.
+        Install with: pip install sentence-transformers
+        Note: Production uses text-embedding-3-small (1536-dim) via OpenAI.
+        """
+        import asyncio
+        from sentence_transformers import SentenceTransformer
+
+        # Cache the model so it only loads once per process
+        if not hasattr(self, "_local_model"):
+            self._local_model = SentenceTransformer("all-MiniLM-L6-v2")
+
+        loop = asyncio.get_event_loop()
+        embedding = await loop.run_in_executor(
+            None, lambda: self._local_model.encode(text).tolist()
+        )
+        return embedding
 
 
