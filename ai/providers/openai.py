@@ -3,21 +3,34 @@ from typing import AsyncGenerator, Dict, Any, List
 from openai import AsyncOpenAI
 from ai.providers.base import LLMProvider
 
+# Map production model names → Groq equivalents for dev
+# When OPENAI_BASE_URL points to Groq, these names don't exist.
+GROQ_MODEL_MAP = {
+    "gpt-5.6-luna": "compound-beta",
+    "gpt-5.6-terra": "compound-beta",
+}
+
 class OpenAIProvider(LLMProvider):
-    """OpenAI API implementation for GPT-5.6 Luna / Terra models."""
+    """OpenAI API implementation. Supports Groq as a dev drop-in via OPENAI_BASE_URL."""
 
     def __init__(self, api_key: str = None, base_url: str = None):
-        # Fall back to environment variable if not provided
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
-        
+        self._is_groq = "groq.com" in (self.base_url or "")
+
         self.client = AsyncOpenAI(
             api_key=self.api_key,
             base_url=self.base_url
         )
 
+    def _resolve_model(self, model: str) -> str:
+        """Maps production model names to provider-compatible names."""
+        if self._is_groq:
+            return GROQ_MODEL_MAP.get(model, model)
+        return model
+
     async def generate(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
-        model = kwargs.get("model", "gpt-5.6-luna")
+        model = self._resolve_model(kwargs.get("model", "gpt-5.6-luna"))
         temperature = kwargs.get("temperature", 0.7)
         max_tokens = kwargs.get("max_tokens", 1000)
 
@@ -40,7 +53,7 @@ class OpenAIProvider(LLMProvider):
         }
 
     async def stream(self, messages: List[Dict[str, str]], **kwargs) -> AsyncGenerator[str, None]:
-        model = kwargs.get("model", "gpt-5.6-luna")
+        model = self._resolve_model(kwargs.get("model", "gpt-5.6-luna"))
         temperature = kwargs.get("temperature", 0.7)
 
         response_stream = await self.client.chat.completions.create(
@@ -56,7 +69,7 @@ class OpenAIProvider(LLMProvider):
                 yield chunk.choices[0].delta.content
 
     async def tool_call(self, messages: List[Dict[str, str]], tools: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
-        model = kwargs.get("model", "gpt-5.6-luna")
+        model = self._resolve_model(kwargs.get("model", "gpt-5.6-luna"))
         
         response = await self.client.chat.completions.create(
             model=model,

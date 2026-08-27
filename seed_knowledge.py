@@ -1,43 +1,44 @@
 import os
 import asyncio
 import dotenv
+import pdfplumber
 from supabase import create_client
 from ai.providers.openai import OpenAIProvider
 from workers.ingestion.pipeline import KnowledgeIngestionPipeline
 
 dotenv.load_dotenv()
 
-# Sample Orbit Works FAQ content (placeholder until Usman provides real content)
-SAMPLE_ORBIT_WORKS_CONTENT = """
-Orbit Works is a software development agency specializing in custom AI-powered web and mobile applications, enterprise automation, and data analytics solutions.
+def extract_pdf_text(pdf_path: str) -> str:
+    """Extract all text content from a PDF file."""
+    text = ""
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+    return text.strip()
 
-Services offered by Orbit Works include: Custom Software Development, AI & Machine Learning Integration, Web Application Development, Mobile App Development, API Development & Integration, UI/UX Design, DevOps & Cloud Deployment, and IT Consulting.
-
-Orbit Works software development services start at $5,000 for small projects. Enterprise projects and custom AI integrations are priced from $15,000 upward depending on complexity and scope.
-
-Orbit Works business hours are Monday to Friday, 9:00 AM to 6:00 PM Pakistan Standard Time (PKT). The team is available on WhatsApp and email during these hours.
-
-To book a free strategy consultation with the Orbit Works team, visit our Calendly link provided by your account manager or request it via the chat. Strategy calls are 30 minutes and are completely free.
-
-Orbit Works has delivered over 50 projects across Pakistan, UAE, UK, and USA. Our portfolio includes AI chatbots, SaaS platforms, ERP systems, and e-commerce solutions.
-
-Orbit Works payment terms: 50% upfront before development begins, and 50% upon project delivery. We accept bank transfers, PayPal, and Wise.
-
-The typical delivery timeline for a standard web application at Orbit Works is 4-8 weeks. AI integrations may take 6-12 weeks depending on data readiness.
-
-Orbit Works provides 3 months of free post-launch support for all projects. Extended support packages are available on request.
-
-Orbit Works technology stack includes Python, FastAPI, React, Next.js, Supabase, PostgreSQL, OpenAI APIs, and AWS/GCP cloud platforms.
-"""
+# Load real FAQ from the PDF provided by Usman
+FAQ_PDF_PATH = "OrbitWorks FAQs.pdf"
 
 async def run_ingestion():
     print("--- Orbit Works Knowledge Base Ingestion Script ---")
 
     supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_KEY")
+    # Seed script uses the service role key to bypass RLS (admin operation).
+    # Get it from: Supabase Dashboard → Settings → API → service_role (secret)
+    supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")
+    if not os.getenv("SUPABASE_SERVICE_KEY"):
+        print("⚠️  Warning: SUPABASE_SERVICE_KEY not set. Falling back to SUPABASE_KEY.")
+        print("   RLS may block inserts. Get service_role key from Supabase → Settings → API.\n")
     supabase = create_client(supabase_url, supabase_key)
     provider = OpenAIProvider()
     pipeline = KnowledgeIngestionPipeline(supabase_client=supabase, chunk_size=80, overlap=15)
+
+    # Step 0: Extract real content from PDF
+    print(f"\n[0/4] Extracting text from {FAQ_PDF_PATH}...")
+    raw_text = extract_pdf_text(FAQ_PDF_PATH)
+    print(f"✅ Extracted {len(raw_text)} characters from PDF.")
 
     # Step 1: Insert a tenant record if not exists
     print("\n[1/4] Registering tenant...")
@@ -90,7 +91,7 @@ async def run_ingestion():
         tenant_id=tenant_id,
         source_id=source_id,
         document_id=document_id,
-        raw_text=SAMPLE_ORBIT_WORKS_CONTENT,
+        raw_text=raw_text,
         embedding_provider_fn=embed_fn
     )
 
