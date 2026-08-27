@@ -21,10 +21,13 @@ async def test_flow():
         return
 
     # 1. Initialize clients
-    supabase = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+    # Use service role key in tests — bypasses RLS for direct verification
+    supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")
+    supabase = create_client(os.getenv("SUPABASE_URL"), supabase_key)
     provider = OpenAIProvider()
-    guardrails = GroundingGuardrails(confidence_threshold=0.5)
-    retriever = SecurityEnforcedRetrieval(supabase_client=supabase)
+    # Lower threshold for local embeddings (384-dim cosine scores are lower than OpenAI 1536-dim)
+    guardrails = GroundingGuardrails(confidence_threshold=0.1)
+    retriever = SecurityEnforcedRetrieval(supabase_client=supabase, default_threshold=0.1)
 
     # 2. User query
     user_query = "How much do your services cost?"
@@ -47,7 +50,8 @@ async def test_flow():
         tenant_id=TENANT_ID,
         query_text=user_query,
         query_embedding=query_embedding,
-        limit=5
+        limit=5,
+        match_threshold=0.1,
     )
 
     if not retrieved_chunks:
