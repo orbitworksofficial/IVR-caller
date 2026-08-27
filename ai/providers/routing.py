@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -77,8 +78,8 @@ class ModelRouter:
         **kwargs,
     ) -> Dict[str, Any]:
         """
-        Executes generate() with automatic model selection and error fallback.
-        Injects routing metadata into the result for telemetry logging.
+        Executes generate() with automatic model selection, retry on 429,
+        and error fallback. Injects routing metadata into result for telemetry.
         """
         model, reason = self.determine_route(
             messages,
@@ -87,27 +88,35 @@ class ModelRouter:
         )
         logger.info(f"ModelRouter: selected '{model}' | reason='{reason.value}'")
 
-        try:
-            result = await self.provider.generate(messages=messages, model=model, **kwargs)
-            result["routing"] = {"model": model, "reason": reason.value, "fallback": False}
-            return result
+        for attempt in range(3):  # up to 3 retries on rate limit
+            try:
+                result = await self.provider.generate(messages=messages, model=model, **kwargs)
+                result["routing"] = {"model": model, "reason": reason.value, "fallback": False}
+                return result
+            except Exception as e:
+                err_str = str(e)
+                if "429" in err_str or "rate_limit" in err_str.lower():
+                    wait = 8 * (attempt + 1)  # 8s, 16s, 24s
+                    logger.warning(f"ModelRouter: rate limit on '{model}', waiting {wait}s (attempt {attempt+1}/3)")
+                    await asyncio.sleep(wait)
+                    continue
+                # Non-rate-limit error → try fallback model once
+                fallback = TERRA if model == LUNA else LUNA
+                logger.warning(f"ModelRouter: '{model}' failed ({e}). Falling back to '{fallback}'.")
+                try:
+                    result = await self.provider.generate(messages=messages, model=fallback, **kwargs)
+                    result["routing"] = {
+                        "model": fallback,
+                        "reason": RouteReason.FALLBACK.value,
+                        "fallback": True,
+                        "original_model": model,
+                        "original_error": str(e),
+                    }
+                    return result
+                except Exception as e2:
+                    raise e2
 
-        except Exception as e:
-            fallback = TERRA if model == LUNA else LUNA
-            logger.warning(
-                f"ModelRouter: '{model}' failed ({e}). Falling back to '{fallback}'."
-            )
-            result = await self.provider.generate(
-                messages=messages, model=fallback, **kwargs
-            )
-            result["routing"] = {
-                "model": fallback,
-                "reason": RouteReason.FALLBACK.value,
-                "fallback": True,
-                "original_model": model,
-                "original_error": str(e),
-            }
-            return result
+        raise RuntimeError(f"ModelRouter: rate limit exceeded after 3 retries on '{model}'.")
 
     async def tool_call(
         self,

@@ -127,7 +127,7 @@ async def run_phase2_test():
         conversation_history.append({"role": "user", "content": user_message})
         conversation_history.append({"role": "assistant", "content": ai_text})
 
-        await asyncio.sleep(4)  # Respect rate limits on dev endpoint
+        await asyncio.sleep(15)  # Groq free tier: wait between turns to avoid TPM limit
 
     # Final structured memory extraction
     print(f"\n{'='*65}")
