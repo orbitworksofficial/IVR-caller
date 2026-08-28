@@ -1,16 +1,17 @@
 from typing import Dict, Any
 from supabase import Client
 
-# Prices defined in implementation plan (per 1 Million tokens)
+# Prices per 1 Million tokens
+# Production (OpenAI) prices from implementation plan
+# Dev (Groq) prices from console.groq.com/docs/models
 MODEL_PRICING = {
-    "gpt-5.6-luna": {
-        "input": 0.20,
-        "output": 1.20
-    },
-    "gpt-5.6-terra": {
-        "input": 2.00,
-        "output": 12.00
-    }
+    # Production models
+    "gpt-5.6-luna":  {"input": 0.20,  "output": 1.20},
+    "gpt-5.6-terra": {"input": 2.00,  "output": 12.00},
+    # Dev models (Groq) — actual prices
+    "llama-3.1-8b-instant":      {"input": 0.05,  "output": 0.08},   # Luna equivalent
+    "llama-3.3-70b-versatile":   {"input": 0.59,  "output": 0.79},   # Terra equivalent
+    "compound-beta":             {"input": 0.59,  "output": 0.79},   # legacy mapping
 }
 
 class TelemetryTracker:

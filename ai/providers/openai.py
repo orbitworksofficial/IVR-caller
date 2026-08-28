@@ -4,10 +4,14 @@ from openai import AsyncOpenAI
 from ai.providers.base import LLMProvider
 
 # Map production model names → Groq equivalents for dev
-# When OPENAI_BASE_URL points to Groq, these names don't exist.
+# Luna  → llama-3.1-8b-instant  (fast, cheap, simple queries)
+# Terra → llama-3.3-70b-versatile (slower, smarter, complex queries + tool calls)
+# This mirrors the Luna/Terra cost-vs-capability split in production.
+# When real OpenAI keys are added, remove OPENAI_BASE_URL from .env and
+# these mappings are bypassed automatically.
 GROQ_MODEL_MAP = {
-    "gpt-5.6-luna": "compound-beta",
-    "gpt-5.6-terra": "compound-beta",
+    "gpt-5.6-luna":  "llama-3.1-8b-instant",       # fast / low cost
+    "gpt-5.6-terra": "llama-3.3-70b-versatile",     # capable / higher cost
 }
 
 class OpenAIProvider(LLMProvider):
