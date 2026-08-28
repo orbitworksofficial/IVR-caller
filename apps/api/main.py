@@ -1,4 +1,5 @@
 import time
+import logging
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from supabase import Client
@@ -17,6 +18,9 @@ from ai.memory.memory_manager import MemoryManager
 from ai.prompts.config import TenantConfigResolver
 from ai.tools.schemas import get_tools_definition
 from ai.tools.executor import ToolExecutor
+from ai.optimization.token_optimizer import TokenOptimizer
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="OrbitWorks Chatbot API",
@@ -98,6 +102,8 @@ async def chat(
 
     # ── 1. Input safety check ────────────────────────────────────────────────
     if not guardrails.is_safe_input(request.message):
+        reason = guardrails.get_injection_reason(request.message)
+        logger.warning(f"Input blocked. Tenant={request.tenant_id} Reason={reason}")
         raise HTTPException(status_code=400, detail="Message blocked by safety guardrails.")
 
     # ── 2. Activate RLS session variable (DB-level tenant isolation) ─────────
@@ -168,10 +174,26 @@ async def chat(
         tenant_id=request.tenant_id,
         query_text=request.message,
         query_embedding=query_embedding,
-        limit=5,
+        limit=6,  # fetch extra so compressor can prune duplicates
     )
-    chunks = retrieval_result["chunks"]
+    raw_chunks = retrieval_result["chunks"]
     retrieval_mode = retrieval_result["retrieval_mode"]
+
+    # Phase 3: compress + deduplicate chunks within token budget
+    optimizer = TokenOptimizer()
+    chunks, knowledge_tokens = optimizer.compress_knowledge(raw_chunks)
+
+    # Phase 3: hard abstain if retrieval is empty or all scores below threshold
+    if guardrails.should_abstain(chunks):
+        logger.info(f"Abstaining — no grounded chunks. Tenant={request.tenant_id}")
+        return ChatResponse(
+            response="I don't have specific information about that in my knowledge base. "
+                     "Would you like me to connect you with our team who can help directly?",
+            conversation_id=conversation_id,
+            grounded=False,
+            model="abstain",
+        )
+
     grounded = guardrails.meets_grounding_threshold(chunks)
     retrieved_text = "\n\n".join([c["content"] for c in chunks]) if chunks else ""
 
@@ -189,13 +211,23 @@ async def chat(
         memory_context=memory_context,
     )
 
-    # ── 8. Build message list and route through ModelRouter ──────────────────
+    # ── 8. Build message list — trim history to token budget ─────────────────
     router = ModelRouter(provider=provider)
     tools = get_tools_definition()
+    trimmed_history = optimizer.trim_history(recent_messages)
 
     messages = [{"role": "system", "content": system_prompt}]
-    messages += recent_messages
+    messages += trimmed_history
     messages.append({"role": "user", "content": request.message})
+
+    # Phase 3: log token usage before sending to API
+    token_report = optimizer.build_usage_report(system_prompt, trimmed_history, chunks)
+    logger.info(
+        f"Token budget — system:{token_report['system_tokens']} "
+        f"history:{token_report['history_tokens']} "
+        f"knowledge:{token_report['knowledge_tokens']} "
+        f"total_est:{token_report['total_estimated']}"
+    )
 
     # Always attempt tool_call — ModelRouter routes to Terra automatically
     result = await router.tool_call(messages=messages, tools=tools)
