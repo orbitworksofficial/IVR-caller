@@ -47,6 +47,24 @@ async def health_check():
     )
 
 
+@app.get("/usage", tags=["System"])
+async def get_usage_summary(
+    tenant_id: str,
+    limit: int = 30,
+    supabase: Client = Depends(get_supabase_client),
+):
+    """
+    Phase 4: Returns usage and cost summary for a tenant.
+    Shows recent LLM calls, total cost, avg latency, and model distribution.
+    Used for cost monitoring and model policy decisions.
+    """
+    config_resolver = TenantConfigResolver(supabase_client=supabase)
+    summary = await config_resolver.get_tenant_usage_summary(
+        tenant_id=tenant_id, limit=limit
+    )
+    return {"tenant_id": tenant_id, "period": f"last_{limit}_requests", **summary}
+
+
 @app.get("/widget/config", response_model=WidgetConfigResponse, tags=["Widget"])
 async def get_widget_config(
     bot_id: str,
