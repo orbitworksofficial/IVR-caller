@@ -54,13 +54,24 @@ class KnowledgeIngestionPipeline:
         tenant_id: str,
         source_id: str,
         document_id: str,
-        raw_text: str,
-        embedding_provider_fn: Any # Function taking text -> List[float]
+        raw_text: str = None,
+        embedding_provider_fn: Any = None,
+        text: str = None,
+        provider: Any = None,
+        title: str = None,
+        category: str = None,
+        source_url: str = None
     ) -> List[Dict[str, Any]]:
         """
         Executes end-to-end ingestion: clean, validate, chunk, embed, and store in knowledge_chunks.
+        Supports both text/raw_text parameters and embedding_provider_fn/provider.
+        Also inserts optional metadata columns (title, category, source_url) directly.
         """
-        cleaned = self.clean_text(raw_text)
+        actual_text = raw_text or text
+        if not actual_text:
+            raise ValueError("Ingestion Failed: No text content provided.")
+
+        cleaned = self.clean_text(actual_text)
         if not self.validate_content(cleaned):
             raise ValueError("Ingestion Failed: Document content failed quality validation.")
 
@@ -68,8 +79,13 @@ class KnowledgeIngestionPipeline:
         inserted_records = []
 
         for chunk_content in chunks:
-            # Generate embedding using the injected provider function
-            embedding = await embedding_provider_fn(chunk_content)
+            # Generate embedding using the injected function or provider
+            if embedding_provider_fn:
+                embedding = await embedding_provider_fn(chunk_content)
+            elif provider:
+                embedding = await provider.embed(chunk_content)
+            else:
+                raise ValueError("Ingestion Failed: No embedding provider or function provided.")
 
             payload = {
                 "tenant_id": tenant_id,
@@ -77,6 +93,9 @@ class KnowledgeIngestionPipeline:
                 "document_id": document_id,
                 "content": chunk_content,
                 "embedding": embedding,
+                "title": title,
+                "category": category,
+                "source_url": source_url,
                 "metadata": {}
             }
             
