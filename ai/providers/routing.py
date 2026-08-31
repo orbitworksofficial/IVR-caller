@@ -88,9 +88,12 @@ class ModelRouter:
         )
         logger.info(f"ModelRouter: selected '{model}' | reason='{reason.value}'")
 
+        # Strip 'model' from kwargs to prevent multiple values for keyword argument error
+        clean_kwargs = {k: v for k, v in kwargs.items() if k != "model"}
+
         for attempt in range(3):  # up to 3 retries on rate limit
             try:
-                result = await self.provider.generate(messages=messages, model=model, **kwargs)
+                result = await self.provider.generate(messages=messages, model=model, **clean_kwargs)
                 result["routing"] = {"model": model, "reason": reason.value, "fallback": False}
                 return result
             except Exception as e:
@@ -104,7 +107,7 @@ class ModelRouter:
                 fallback = TERRA if model == LUNA else LUNA
                 logger.warning(f"ModelRouter: '{model}' failed ({e}). Falling back to '{fallback}'.")
                 try:
-                    result = await self.provider.generate(messages=messages, model=fallback, **kwargs)
+                    result = await self.provider.generate(messages=messages, model=fallback, **clean_kwargs)
                     result["routing"] = {
                         "model": fallback,
                         "reason": RouteReason.FALLBACK.value,
