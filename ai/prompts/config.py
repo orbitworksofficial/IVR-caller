@@ -46,12 +46,7 @@ class TenantConfigResolver:
         if bot_id in self._cache:
             return self._cache[bot_id]
 
-        response = self.supabase.table("bots").select(
-            "id, tenant_id, name, support_mode_enabled, sales_mode_enabled, "
-            "welcome_message, system_personality, booking_url, handoff_settings, "
-            "tone, response_language, max_response_length, topic_restrictions, "
-            "escalation_email, escalation_phone, business_hours"
-        ).eq("id", bot_id).execute()
+        response = self.supabase.table("bots").select("*").eq("id", bot_id).execute()
 
         if not response.data:
             raise ValueError(f"Bot config not found for ID '{bot_id}'.")
