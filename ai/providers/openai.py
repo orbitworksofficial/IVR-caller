@@ -44,7 +44,10 @@ class OpenAIProvider(LLMProvider):
         
         # Newer models (gpt-5, o1, o3) do not support temperature parameters
         if is_new_model:
-            pass
+            # Set reasoning_effort to 'none' if we are making tool/function calls on reasoning models,
+            # as required by OpenAI /v1/chat/completions endpoint.
+            if "tools" in kwargs:
+                params["reasoning_effort"] = "none"
         else:
             params["temperature"] = temperature
             
