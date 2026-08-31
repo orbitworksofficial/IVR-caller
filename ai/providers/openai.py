@@ -42,8 +42,8 @@ class OpenAIProvider(LLMProvider):
             **{k: v for k, v in kwargs.items() if k not in ["model", "temperature", "max_tokens", "max_completion_tokens"]}
         }
         
-        if "o1" in model or "o3" in model:
-            # reasoning models do not support temperature
+        # Newer models (gpt-5, o1, o3) do not support temperature parameters
+        if is_new_model:
             pass
         else:
             params["temperature"] = temperature
