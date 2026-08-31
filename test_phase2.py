@@ -149,6 +149,9 @@ async def run_phase2_test():
 
 
 if __name__ == "__main__":
-    os.environ["OPENAI_BASE_URL"] = "https://api.groq.com/openai/v1"
-    os.environ["OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY", "")
+    # Dynamically set Groq Base URL if using a Groq key (starts with gsk_),
+    # otherwise respect standard OpenAI endpoint settings in .env.
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    if api_key.startswith("gsk_"):
+        os.environ["OPENAI_BASE_URL"] = "https://api.groq.com/openai/v1"
     asyncio.run(run_phase2_test())

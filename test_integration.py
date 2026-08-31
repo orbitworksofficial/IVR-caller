@@ -60,7 +60,9 @@ async def test_flow():
 
     print(f"✅ Retrieved {len(retrieved_chunks)} real chunk(s) from Supabase:")
     for i, chunk in enumerate(retrieved_chunks, 1):
-        print(f"  [{i}] score={chunk.get('score', 'N/A'):.4f} | {chunk['content'][:80]}...")
+        score_val = chunk.get("score")
+        score_str = f"{score_val:.4f}" if isinstance(score_val, (int, float)) else "N/A"
+        print(f"  [{i}] score={score_str} | {chunk['content'][:80]}...")
 
     # 6. Grounding threshold check
     if not guardrails.meets_grounding_threshold(retrieved_chunks):
