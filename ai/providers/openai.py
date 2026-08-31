@@ -33,18 +33,42 @@ class OpenAIProvider(LLMProvider):
             return GROQ_MODEL_MAP.get(model, model)
         return model
 
+    def _get_completion_params(self, model: str, temperature: float, max_tokens: int, **kwargs) -> Dict[str, Any]:
+        """Prepares completion API parameters, mapping max_tokens to max_completion_tokens for newer models."""
+        is_new_model = "gpt-5" in model or "o1" in model or "o3" in model
+        
+        params = {
+            "model": model,
+            **{k: v for k, v in kwargs.items() if k not in ["model", "temperature", "max_tokens", "max_completion_tokens"]}
+        }
+        
+        if "o1" in model or "o3" in model:
+            # reasoning models do not support temperature
+            pass
+        else:
+            params["temperature"] = temperature
+            
+        if is_new_model:
+            params["max_completion_tokens"] = max_tokens
+        else:
+            params["max_tokens"] = max_tokens
+            
+        return params
+
     async def generate(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
         model = self._resolve_model(kwargs.get("model", "gpt-5.6-luna"))
         temperature = kwargs.get("temperature", 0.7)
         max_tokens = kwargs.get("max_tokens", 1000)
-
-        response = await self.client.chat.completions.create(
+        
+        api_params = self._get_completion_params(
             model=model,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             **{k: v for k, v in kwargs.items() if k not in ["model", "temperature", "max_tokens"]}
         )
+
+        response = await self.client.chat.completions.create(**api_params)
 
         return {
             "text": response.choices[0].message.content,
@@ -59,14 +83,18 @@ class OpenAIProvider(LLMProvider):
     async def stream(self, messages: List[Dict[str, str]], **kwargs) -> AsyncGenerator[str, None]:
         model = self._resolve_model(kwargs.get("model", "gpt-5.6-luna"))
         temperature = kwargs.get("temperature", 0.7)
-
-        response_stream = await self.client.chat.completions.create(
+        max_tokens = kwargs.get("max_tokens", 1000)
+        
+        api_params = self._get_completion_params(
             model=model,
             messages=messages,
             temperature=temperature,
+            max_tokens=max_tokens,
             stream=True,
-            **{k: v for k, v in kwargs.items() if k not in ["model", "temperature", "stream"]}
+            **{k: v for k, v in kwargs.items() if k not in ["model", "temperature", "max_tokens", "stream"]}
         )
+
+        response_stream = await self.client.chat.completions.create(**api_params)
 
         async for chunk in response_stream:
             if chunk.choices and chunk.choices[0].delta.content:
@@ -74,14 +102,20 @@ class OpenAIProvider(LLMProvider):
 
     async def tool_call(self, messages: List[Dict[str, str]], tools: List[Dict[str, Any]], **kwargs) -> Dict[str, Any]:
         model = self._resolve_model(kwargs.get("model", "gpt-5.6-luna"))
+        temperature = kwargs.get("temperature", 0.7)
+        max_tokens = kwargs.get("max_tokens", 1000)
         
-        response = await self.client.chat.completions.create(
+        api_params = self._get_completion_params(
             model=model,
             messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
             tools=tools,
             tool_choice="auto",
-            **{k: v for k, v in kwargs.items() if k not in ["model", "tools", "tool_choice"]}
+            **{k: v for k, v in kwargs.items() if k not in ["model", "temperature", "max_tokens", "tools", "tool_choice"]}
         )
+
+        response = await self.client.chat.completions.create(**api_params)
 
         choice = response.choices[0]
         return {

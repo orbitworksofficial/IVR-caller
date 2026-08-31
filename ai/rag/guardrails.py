@@ -84,7 +84,9 @@ class GroundingGuardrails:
         """
         if not retrieval_results:
             return True
-        top_score = retrieval_results[0].get("score", 0.0)
+        top_score = retrieval_results[0].get("score")
+        if top_score is None:
+            top_score = 0.0
         return top_score < self.abstain_threshold
 
     def meets_grounding_threshold(self, retrieval_results: List[Dict[str, Any]]) -> bool:
@@ -94,14 +96,21 @@ class GroundingGuardrails:
         """
         if not retrieval_results:
             return False
-        top_score = retrieval_results[0].get("score", 0.0)
+        top_score = retrieval_results[0].get("score")
+        if top_score is None:
+            top_score = 0.0
         return top_score >= self.confidence_threshold
 
     def score_distribution(self, retrieval_results: List[Dict[str, Any]]) -> Dict[str, float]:
         """Returns score stats for telemetry logging."""
         if not retrieval_results:
             return {"top": 0.0, "mean": 0.0, "min": 0.0, "count": 0}
-        scores = [r.get("score", 0.0) for r in retrieval_results]
+        
+        scores = []
+        for r in retrieval_results:
+            val = r.get("score")
+            scores.append(float(val) if val is not None else 0.0)
+            
         return {
             "top": scores[0],
             "mean": round(sum(scores) / len(scores), 4),
