@@ -1,0 +1,12 @@
+# Normalize line endings.
+* text=auto
+
+# Shell scripts MUST keep LF. Git's autocrlf on Windows would otherwise write
+# CRLF into them, and Linux bash fails with "bad interpreter: /usr/bin/env bash^M".
+*.sh text eol=lf
+
+# Same for anything else executed on the server.
+Dockerfile* text eol=lf
+*.conf text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
