@@ -1,6 +1,6 @@
 from fastapi import Depends
 from supabase import Client
-from apps.api.supabase_client import get_supabase
+from apps.api.supabase_client import get_supabase, get_supabase_admin
 from ai.providers.openai import OpenAIProvider
 from ai.rag.retrieval import SecurityEnforcedRetrieval
 from ai.rag.guardrails import GroundingGuardrails
@@ -25,3 +25,19 @@ def get_guardrails() -> GroundingGuardrails:
 def get_memory_manager() -> MemoryManager:
     """Dependency: returns conversation memory manager."""
     return MemoryManager(recent_limit=10)
+
+
+def get_supabase_admin_client() -> Client:
+    """
+    Dependency: service-role Supabase client for the admin API.
+
+    Admin routes must bypass RLS, because the dashboard authenticates with a
+    Supabase Auth JWT rather than the `app.current_tenant_id` session variable
+    the RLS policies read — so an anon-key query returns nothing.
+
+    This is safe ONLY because get_current_admin has already resolved the caller
+    to exactly one tenant via tenant_admins, and every admin route filters its
+    queries by that tenant_id. Never use this client for a request whose tenant
+    has not been established that way.
+    """
+    return get_supabase_admin()

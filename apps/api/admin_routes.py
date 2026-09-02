@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from supabase import Client
 
 from apps.api.admin_auth import get_current_admin, verify_bot_ownership
-from apps.api.dependencies import get_supabase_client, get_ai_provider
+from apps.api.dependencies import get_supabase_admin_client, get_ai_provider
 from apps.api.security import invalidate_bot_cache, _normalize_host
 from apps.api.schemas import (
     BotSummary, BotCreateRequest, BotUpdateRequest,
@@ -51,7 +51,7 @@ async def get_me(admin: Dict[str, Any] = Depends(get_current_admin)):
 @router.get("/bots", response_model=List[BotSummary])
 async def list_bots(
     admin: Dict[str, Any] = Depends(get_current_admin),
-    supabase: Client = Depends(get_supabase_client),
+    supabase: Client = Depends(get_supabase_admin_client),
 ):
     resp = supabase.table("bots").select("*").eq(
         "tenant_id", _tenant(admin)
@@ -76,7 +76,7 @@ async def list_bots(
 async def get_bot(
     bot_id: str,
     admin: Dict[str, Any] = Depends(get_current_admin),
-    supabase: Client = Depends(get_supabase_client),
+    supabase: Client = Depends(get_supabase_admin_client),
 ):
     """Returns the full bot record for the configuration screen."""
     return await verify_bot_ownership(bot_id, _tenant(admin), supabase)
@@ -86,7 +86,7 @@ async def get_bot(
 async def create_bot(
     payload: BotCreateRequest,
     admin: Dict[str, Any] = Depends(get_current_admin),
-    supabase: Client = Depends(get_supabase_client),
+    supabase: Client = Depends(get_supabase_admin_client),
 ):
     record = payload.model_dump(exclude_none=True)
     record["tenant_id"] = _tenant(admin)
@@ -108,7 +108,7 @@ async def update_bot(
     bot_id: str,
     payload: BotUpdateRequest,
     admin: Dict[str, Any] = Depends(get_current_admin),
-    supabase: Client = Depends(get_supabase_client),
+    supabase: Client = Depends(get_supabase_admin_client),
 ):
     await verify_bot_ownership(bot_id, _tenant(admin), supabase)
 
@@ -133,7 +133,7 @@ async def update_bot(
 async def delete_bot(
     bot_id: str,
     admin: Dict[str, Any] = Depends(get_current_admin),
-    supabase: Client = Depends(get_supabase_client),
+    supabase: Client = Depends(get_supabase_admin_client),
 ):
     """Archives a bot. Conversation history is preserved for auditability (§08)."""
     await verify_bot_ownership(bot_id, _tenant(admin), supabase)
@@ -149,7 +149,7 @@ async def delete_bot(
 async def list_domains(
     bot_id: str,
     admin: Dict[str, Any] = Depends(get_current_admin),
-    supabase: Client = Depends(get_supabase_client),
+    supabase: Client = Depends(get_supabase_admin_client),
 ):
     await verify_bot_ownership(bot_id, _tenant(admin), supabase)
     resp = supabase.table("bot_domains").select("*").eq("bot_id", bot_id).execute()
@@ -167,7 +167,7 @@ async def add_domain(
     bot_id: str,
     payload: DomainCreateRequest,
     admin: Dict[str, Any] = Depends(get_current_admin),
-    supabase: Client = Depends(get_supabase_client),
+    supabase: Client = Depends(get_supabase_admin_client),
 ):
     """
     Registers an allowed embed domain. Accepts a bare host, a full URL, or a
@@ -205,7 +205,7 @@ async def remove_domain(
     bot_id: str,
     domain_id: str,
     admin: Dict[str, Any] = Depends(get_current_admin),
-    supabase: Client = Depends(get_supabase_client),
+    supabase: Client = Depends(get_supabase_admin_client),
 ):
     await verify_bot_ownership(bot_id, _tenant(admin), supabase)
     supabase.table("bot_domains").delete().eq("id", domain_id).eq(
@@ -218,7 +218,7 @@ async def remove_domain(
 @router.get("/knowledge", response_model=List[KnowledgeDocumentSummary])
 async def list_knowledge(
     admin: Dict[str, Any] = Depends(get_current_admin),
-    supabase: Client = Depends(get_supabase_client),
+    supabase: Client = Depends(get_supabase_admin_client),
 ):
     """
     Lists ingested documents, aggregated from their chunks. The embedding column
@@ -289,7 +289,7 @@ async def _ingest_text(
 async def ingest_knowledge(
     payload: KnowledgeIngestRequest,
     admin: Dict[str, Any] = Depends(get_current_admin),
-    supabase: Client = Depends(get_supabase_client),
+    supabase: Client = Depends(get_supabase_admin_client),
     provider: OpenAIProvider = Depends(get_ai_provider),
 ):
     """Ingests pasted text into the tenant's knowledge base."""
@@ -305,7 +305,7 @@ async def upload_knowledge(
     title: Optional[str] = Form(None),
     category: Optional[str] = Form("faq"),
     admin: Dict[str, Any] = Depends(get_current_admin),
-    supabase: Client = Depends(get_supabase_client),
+    supabase: Client = Depends(get_supabase_admin_client),
     provider: OpenAIProvider = Depends(get_ai_provider),
 ):
     """Ingests an uploaded .txt, .md or .pdf file."""
@@ -349,7 +349,7 @@ async def upload_knowledge(
 async def delete_knowledge(
     document_id: str,
     admin: Dict[str, Any] = Depends(get_current_admin),
-    supabase: Client = Depends(get_supabase_client),
+    supabase: Client = Depends(get_supabase_admin_client),
 ):
     """Removes every chunk belonging to one ingested document."""
     supabase.table("knowledge_chunks").delete().eq(
@@ -363,7 +363,7 @@ async def delete_knowledge(
 async def list_conversations(
     limit: int = 50,
     admin: Dict[str, Any] = Depends(get_current_admin),
-    supabase: Client = Depends(get_supabase_client),
+    supabase: Client = Depends(get_supabase_admin_client),
 ):
     resp = supabase.table("conversations").select("*").eq(
         "tenant_id", _tenant(admin)
@@ -386,7 +386,7 @@ async def list_conversations(
 async def get_conversation(
     conversation_id: str,
     admin: Dict[str, Any] = Depends(get_current_admin),
-    supabase: Client = Depends(get_supabase_client),
+    supabase: Client = Depends(get_supabase_admin_client),
 ):
     """Full transcript for the conversation detail view."""
     conv_resp = supabase.table("conversations").select("*").eq(
@@ -425,7 +425,7 @@ async def get_conversation(
 async def list_leads(
     limit: int = 100,
     admin: Dict[str, Any] = Depends(get_current_admin),
-    supabase: Client = Depends(get_supabase_client),
+    supabase: Client = Depends(get_supabase_admin_client),
 ):
     resp = supabase.table("leads").select("*").eq(
         "tenant_id", _tenant(admin)
@@ -450,7 +450,7 @@ async def list_leads(
 async def list_handoffs(
     limit: int = 100,
     admin: Dict[str, Any] = Depends(get_current_admin),
-    supabase: Client = Depends(get_supabase_client),
+    supabase: Client = Depends(get_supabase_admin_client),
 ):
     resp = supabase.table("handoffs").select("*").eq(
         "tenant_id", _tenant(admin)
@@ -470,7 +470,7 @@ async def update_handoff(
     handoff_id: str,
     payload: HandoffUpdateRequest,
     admin: Dict[str, Any] = Depends(get_current_admin),
-    supabase: Client = Depends(get_supabase_client),
+    supabase: Client = Depends(get_supabase_admin_client),
 ):
     resp = supabase.table("handoffs").update(
         {"status": payload.status}
@@ -486,7 +486,7 @@ async def update_handoff(
 @router.get("/stats", response_model=DashboardStats)
 async def get_stats(
     admin: Dict[str, Any] = Depends(get_current_admin),
-    supabase: Client = Depends(get_supabase_client),
+    supabase: Client = Depends(get_supabase_admin_client),
 ):
     """
     Headline numbers for the overview screen. Uses count-only queries so this
