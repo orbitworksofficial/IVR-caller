@@ -1,0 +1,12 @@
+# Development-only extras. NOT installed into the Docker image.
+-r requirements.txt
+
+# Free local embeddings (384-dim) as an alternative to OpenAI's 1536-dim.
+# Pulls in PyTorch (~2GB), which is why it is excluded from the production
+# image. Only needed if EMBEDDING_PROVIDER=local, and note the database's
+# vector column must be resized to 384 to match.
+sentence-transformers>=3.0.0
+
+# Test tooling
+httpx>=0.27.0
+pyyaml>=6.0

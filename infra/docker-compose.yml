@@ -1,0 +1,79 @@
+# OrbitWorks chatbot — VPS deployment
+#
+# Designed to sit alongside other projects on a shared VPS:
+#   * Ports are high and non-standard (18000/13000) to avoid collisions.
+#   * Both services join a private network named for this project only.
+#   * Containers restart unless explicitly stopped, so a reboot brings them back.
+#
+# PORT BINDING
+# ------------
+# By default both ports bind to 0.0.0.0, so the app is reachable at
+# http://<vps-ip>:18000 with no reverse proxy — which is what "IP and port for
+# now" needs. Once a domain and Nginx are in front, change the mappings to
+# "127.0.0.1:18000:8000" so only the proxy can reach them.
+#
+# Run from the REPOSITORY ROOT, not from infra/:
+#   docker compose -f infra/docker-compose.yml --env-file .env up -d --build
+
+name: orbitworks-chatbot
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.api
+    image: orbitworks/chatbot-api:latest
+    container_name: orbitworks-chatbot-api
+    restart: unless-stopped
+    ports:
+      - "${API_BIND:-0.0.0.0}:${API_PORT:-18000}:8000"
+    environment:
+      # Secrets come from the .env file passed with --env-file; they are never
+      # baked into the image.
+      SUPABASE_URL: ${SUPABASE_URL:?SUPABASE_URL is required}
+      SUPABASE_KEY: ${SUPABASE_KEY:?SUPABASE_KEY is required}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY:?SUPABASE_SERVICE_KEY is required}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      RATE_LIMIT_MAX_REQUESTS: ${RATE_LIMIT_MAX_REQUESTS:-20}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+    networks:
+      - chatbot
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  admin:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.admin
+      args:
+        # NEXT_PUBLIC_* are compiled into the browser bundle at build time, so
+        # they must be build args. Public values only — never the service key.
+        NEXT_PUBLIC_SUPABASE_URL: ${SUPABASE_URL}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${SUPABASE_KEY}
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:?PUBLIC_API_URL is required (e.g. http://your-vps-ip:18000)}
+        NEXT_PUBLIC_WIDGET_URL: ${PUBLIC_WIDGET_URL:?PUBLIC_WIDGET_URL is required (e.g. http://your-vps-ip:18000/widget.js)}
+    image: orbitworks/chatbot-admin:latest
+    container_name: orbitworks-chatbot-admin
+    restart: unless-stopped
+    ports:
+      - "${ADMIN_BIND:-0.0.0.0}:${ADMIN_PORT:-13000}:3000"
+    depends_on:
+      - api
+    networks:
+      - chatbot
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  chatbot:
+    name: orbitworks-chatbot-net
+    driver: bridge
