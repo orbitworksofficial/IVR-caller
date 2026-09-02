@@ -1,80 +1,91 @@
 # VPS Deployment
 
-Deploys the chatbot to a VPS that is **already running other projects**, using
-Docker Compose (per plan §08 — no Kubernetes). Everything is scoped so it cannot
-disturb what is already there.
+Written for **your server** (`srv1926663`), based on its actual state:
 
-Target for this first pass: reachable at `http://<vps-ip>:18000`, no domain or
-TLS yet. See [Adding a domain](#adding-a-domain-later) for the next step.
+| | |
+|---|---|
+| OS | Ubuntu 24.04.4 LTS |
+| Memory | 7.8 GB total, 4.6 GB free |
+| Docker | **Not installed** — step 1 installs it |
+| Nginx | Running, serving ports 80 and 443 |
+| Port 8000 | **Taken** by another project (`python3`) |
+| Port 3000 | **Taken** by another project (`next-server`) |
+| Firewall | `ufw` active — only SSH and Nginx (80/443) allowed |
+
+Because 8000 and 3000 are in use, this deploys on **18000** and **13000**, bound
+to `127.0.0.1` so only Nginx can reach them. Because ufw allows nothing but
+80/443, traffic arrives through Nginx on a subdomain — **no firewall change
+needed**, and you get HTTPS, which the widget requires to work on customer sites.
+
+```
+Internet → :443 Nginx ─┬─ chat.orb-itworks.com  → 127.0.0.1:18000  (API + widget)
+                       └─ admin.orb-itworks.com → 127.0.0.1:13000  (dashboard)
+
+        (your other projects keep using :8000 and :3000, untouched)
+```
 
 ---
 
-## Step 0 — Investigate the VPS first
+## Step 1 — DNS
 
-Run these on the VPS. **All are read-only** — nothing is installed or changed.
-Send me the output and I will tailor the rest.
+In your registrar or Cloudflare, add two **A records** pointing at the VPS:
+
+| Type | Name | Value |
+|---|---|---|
+| A | `chat` | *your VPS IP* |
+| A | `admin` | *your VPS IP* |
+
+Find the IP with `curl -s ifconfig.me` on the server.
+
+> Using Cloudflare? Set both records to **DNS only** (grey cloud) until certbot
+> has issued the certificate. The orange proxy cloud breaks the HTTP-01
+> challenge. Switch it back on afterwards if you want.
+
+Wait a minute or two, then confirm from the VPS:
 
 ```bash
-# What OS and how much memory?
-cat /etc/os-release | head -2
-free -h | head -2
-df -h / | tail -1
-
-# Is Docker installed, and can your user run it?
-docker --version 2>/dev/null || echo "docker: NOT INSTALLED"
-docker compose version 2>/dev/null || echo "compose plugin: NOT INSTALLED"
-docker ps --format '{{.Names}}\t{{.Image}}\t{{.Ports}}' 2>/dev/null || echo "(cannot list containers)"
-
-# What web server is in front, if any?
-which nginx apache2 httpd caddy 2>/dev/null || echo "no web server found on PATH"
-systemctl is-active nginx apache2 2>/dev/null
-
-# Which ports are already taken? (the important one)
-ss -tulpn | grep LISTEN
-
-# Is the firewall filtering inbound ports?
-ufw status 2>/dev/null || iptables -L INPUT -n 2>/dev/null | head -5 || echo "(no ufw/iptables access)"
+dig +short chat.orb-itworks.com
+dig +short admin.orb-itworks.com
 ```
 
-The critical line is `ss -tulpn`. This deployment uses **18000** and **13000**;
-if either is already listening, change `API_PORT` / `ADMIN_PORT` in `.env`.
+Both must print your VPS IP before you continue. Certbot will fail otherwise.
 
-### If Docker is not installed
+---
+
+## Step 2 — Install Docker
 
 ```bash
 curl -fsSL https://get.docker.com | sudo sh
-sudo usermod -aG docker $USER
-# Log out and back in for the group change to apply, then verify:
 docker run --rm hello-world
 ```
 
-Installing Docker does not disturb existing non-Docker sites — it only adds a
-daemon and a `docker0` network interface.
+You are running as `root`, so no `usermod` step is needed. This adds a daemon
+and a `docker0` interface; your existing Nginx and Python/Next.js services are
+unaffected.
 
 ---
 
-## Step 1 — Get the code onto the VPS
+## Step 3 — Get the code onto the server
 
 ```bash
-sudo mkdir -p /opt/orbitworks && sudo chown $USER:$USER /opt/orbitworks
-cd /opt/orbitworks
+mkdir -p /opt/orbitworks && cd /opt/orbitworks
 git clone <your-repo-url> chatbot
 cd chatbot
 ```
 
-No repo yet? Copy from your machine instead:
+No git remote yet? Copy from your Windows machine instead:
 
-```bash
-# From d:\chat-bot on Windows
-scp -r apps ai workers scripts infra database supabase requirements.txt \
-    user@your-vps-ip:/opt/orbitworks/chatbot/
+```powershell
+# Run from d:\chat-bot
+scp -r apps ai workers scripts infra database supabase requirements.txt .dockerignore `
+    root@<vps-ip>:/opt/orbitworks/chatbot/
 ```
 
 ---
 
-## Step 2 — Create the .env on the server
+## Step 4 — Create the .env on the server
 
-`.env` is gitignored, so it never arrives with the code. Create it on the VPS:
+`.env` is gitignored, so it does not travel with the code.
 
 ```bash
 cd /opt/orbitworks/chatbot
@@ -90,14 +101,14 @@ SUPABASE_SERVICE_KEY=<service_role secret key>
 # OpenAI
 OPENAI_API_KEY=<your key>
 
-# Ports on the VPS — change if `ss -tulpn` shows these are taken
+# Ports — 8000 and 3000 are taken by another project on this server
 API_PORT=18000
 ADMIN_PORT=13000
 
-# How the browser reaches the API. MUST be the public address, not localhost —
-# these are compiled into the admin's browser bundle at build time.
-PUBLIC_API_URL=http://<your-vps-ip>:18000
-PUBLIC_WIDGET_URL=http://<your-vps-ip>:18000/widget.js
+# Public URLs. These are compiled into the admin's BROWSER bundle at build
+# time, so they must be the real public addresses, not localhost.
+PUBLIC_API_URL=https://chat.orb-itworks.com
+PUBLIC_WIDGET_URL=https://chat.orb-itworks.com/widget.js
 
 ENVIRONMENT=production
 WEB_CONCURRENCY=2
@@ -105,7 +116,7 @@ RATE_LIMIT_MAX_REQUESTS=20
 RATE_LIMIT_WINDOW_SECONDS=60
 ```
 
-Lock it down — it holds the service-role key:
+It holds the service-role key — lock it down:
 
 ```bash
 chmod 600 .env
@@ -113,160 +124,125 @@ chmod 600 .env
 
 ---
 
-## Step 3 — Build and start
+## Step 5 — Build and start the containers
 
 ```bash
 cd /opt/orbitworks/chatbot
 docker compose -f infra/docker-compose.yml --env-file .env up -d --build
 ```
 
-First build takes 3–5 minutes. Then:
+First build takes 3–5 minutes. Check both came up healthy:
 
 ```bash
 docker compose -f infra/docker-compose.yml ps
-docker compose -f infra/docker-compose.yml logs -f --tail=50
+curl -s http://127.0.0.1:18000/health
+curl -s -o /dev/null -w "admin: %{http_code}\n" http://127.0.0.1:13000/login
+```
+
+`/health` should return `{"status":"healthy",...}`. If not:
+
+```bash
+docker compose -f infra/docker-compose.yml logs api --tail=50
 ```
 
 ---
 
-## Step 4 — Verify it actually works
+## Step 6 — Add the Nginx site
+
+This creates a **new** config file. Your existing sites are not touched.
 
 ```bash
-# From the VPS
-curl -s http://localhost:18000/health
-curl -s -o /dev/null -w "widget: %{http_code} (%{size_download} bytes)\n" \
-     http://localhost:18000/widget.js
-curl -s -o /dev/null -w "admin: %{http_code}\n" http://localhost:13000/login
+cd /opt/orbitworks/chatbot
+sudo cp infra/nginx-chatbot.conf /etc/nginx/sites-available/orbitworks-chatbot
+sudo ln -s /etc/nginx/sites-available/orbitworks-chatbot /etc/nginx/sites-enabled/
 
-# A real grounded answer, end to end
-curl -s -X POST http://localhost:18000/chat \
+# ALWAYS test first — a broken config takes down every site on this server
+sudo nginx -t
+```
+
+Only if that prints `syntax is ok` and `test is successful`:
+
+```bash
+sudo systemctl reload nginx
+```
+
+`reload` applies the new config without dropping live connections, so your other
+sites keep serving throughout.
+
+Verify over plain HTTP before adding TLS:
+
+```bash
+curl -s http://chat.orb-itworks.com/health
+```
+
+---
+
+## Step 7 — HTTPS
+
+```bash
+sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d chat.orb-itworks.com -d admin.orb-itworks.com
+```
+
+Choose **redirect HTTP to HTTPS** when prompted. Certbot edits only the config
+file from step 6 and sets up automatic renewal.
+
+```bash
+curl -s https://chat.orb-itworks.com/health
+curl -s -o /dev/null -w "admin: %{http_code}\n" https://admin.orb-itworks.com/login
+```
+
+---
+
+## Step 8 — Verify end to end
+
+```bash
+# A real grounded answer from the seeded knowledge base
+curl -s -X POST https://chat.orb-itworks.com/chat \
   -H "Content-Type: application/json" \
   -d '{"bot_id":"66c7c0ec-4e99-4844-b001-296055eacbfd",
        "session_id":"vps-test-1",
        "message":"What is OrbitWorks?"}'
+
+# Streaming should arrive progressively, not in one burst at the end
+curl -N "https://chat.orb-itworks.com/chat/stream?bot_id=66c7c0ec-4e99-4844-b001-296055eacbfd&session_id=vps-test-2&message=What%20is%20AEO"
+
+# Widget bundle
+curl -s -o /dev/null -w "widget: %{http_code} (%{size_download} bytes)\n" \
+     https://chat.orb-itworks.com/widget.js
 ```
 
-Then from your own machine, confirming the firewall allows it:
-
-```bash
-curl -s http://<your-vps-ip>:18000/health
-```
-
-If that last one hangs, open the ports:
-
-```bash
-sudo ufw allow 18000/tcp
-sudo ufw allow 13000/tcp
-```
+Then open **https://admin.orb-itworks.com** and sign in.
 
 ---
 
-## Step 5 — Use it
+## Step 9 — Go live on a website
 
-- **Dashboard**: `http://<your-vps-ip>:13000`
-- **Embed snippet** for any customer site:
+The embed snippet, from the dashboard's **Embed** tab:
 
 ```html
-<script src="http://<your-vps-ip>:18000/widget.js"
+<script src="https://chat.orb-itworks.com/widget.js"
         data-bot-id="66c7c0ec-4e99-4844-b001-296055eacbfd" async></script>
 ```
 
-> **This only works on `http://` sites.** A browser on an HTTPS page blocks
-> requests to plain HTTP (mixed content), so the widget will silently fail to
-> load on any secure site. Fine for testing; see below before going live.
+Before pointing it at a real site, add that site's domain under
+**Bots → Domains** in the dashboard. Until at least one domain is registered the
+bot answers requests from anywhere; once one is, every other origin gets a 403.
 
 ---
 
-## Why this cannot disturb your other projects
+## Why this cannot break your other projects
 
-| Concern | How it is handled |
+| Risk | Mitigation |
 |---|---|
-| Port collisions | Uses 18000/13000, not 80/443/3000/8000. Change in `.env` if taken. |
-| Container name clashes | Prefixed `orbitworks-chatbot-*`; compose project name is `orbitworks-chatbot`. |
-| Network isolation | Own bridge network `orbitworks-chatbot-net`. |
-| Disk from logs | JSON logs capped at 10MB × 3 per service. |
-| Reboots | `restart: unless-stopped` brings both back automatically. |
-| Nginx/Apache configs | Untouched — nothing is written outside this directory. |
-
----
-
-## Adding a domain later
-
-Once `chat.orb-itworks.com` points at the VPS:
-
-**1.** Bind the containers to localhost only, so the proxy is the sole entry point:
-
-```env
-API_BIND=127.0.0.1
-ADMIN_BIND=127.0.0.1
-```
-
-**2.** Add an Nginx server block (a *new* file — do not edit existing sites):
-
-```nginx
-# /etc/nginx/sites-available/orbitworks-chatbot
-server {
-    listen 80;
-    server_name chat.orb-itworks.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:18000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-
-        # Required for SSE streaming (/chat/stream) — without these the
-        # response is buffered and tokens arrive all at once at the end.
-        proxy_buffering off;
-        proxy_cache off;
-        proxy_read_timeout 300s;
-    }
-}
-
-server {
-    listen 80;
-    server_name admin.orb-itworks.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:13000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-}
-```
-
-```bash
-sudo ln -s /etc/nginx/sites-available/orbitworks-chatbot /etc/nginx/sites-enabled/
-sudo nginx -t          # ALWAYS test before reloading — a bad config takes down every site
-sudo systemctl reload nginx
-```
-
-**3.** TLS, which the widget needs to work on HTTPS customer sites:
-
-```bash
-sudo certbot --nginx -d chat.orb-itworks.com -d admin.orb-itworks.com
-```
-
-**4.** Update `.env` to the public HTTPS URLs and rebuild the admin — the old
-values are baked into its browser bundle:
-
-```env
-PUBLIC_API_URL=https://chat.orb-itworks.com
-PUBLIC_WIDGET_URL=https://chat.orb-itworks.com/widget.js
-```
-
-```bash
-docker compose -f infra/docker-compose.yml --env-file .env up -d --build admin
-```
-
-**5.** Register the customer's domain in the dashboard under
-**Bots → Domains**. Until a domain is registered the bot answers requests from
-any site; once one is, everything else gets a 403.
+| Port collision with `python3:8000` / `next-server:3000` | Uses 18000/13000 |
+| Exposing services publicly | Bound to `127.0.0.1`; Nginx is the only entry |
+| Breaking existing Nginx sites | New config file only; `nginx -t` before reload; `reload` not `restart` |
+| Firewall changes | None needed — traffic uses 443, already allowed |
+| Container name clashes | Prefixed `orbitworks-chatbot-*` |
+| Disk filling from logs | Capped at 10MB × 3 per service |
+| Memory pressure | ~400MB for both containers; you have 4.6GB free |
+| Reboot | `restart: unless-stopped` brings them back |
 
 ---
 
@@ -278,15 +254,16 @@ git pull
 docker compose -f infra/docker-compose.yml --env-file .env up -d --build
 ```
 
-Rebuild only what changed:
+**Changing a `PUBLIC_*` URL requires rebuilding admin**, not just restarting it —
+those values are compiled into the browser bundle:
 
 ```bash
-docker compose -f infra/docker-compose.yml --env-file .env up -d --build api
+docker compose -f infra/docker-compose.yml --env-file .env up -d --build admin
 ```
 
 ## Database migrations
 
-Migrations run against hosted Supabase, not the container:
+These run against hosted Supabase, not the container — from your local machine:
 
 ```bash
 npx supabase link --project-ref qewwgdkeamrdlpihjmab
@@ -299,18 +276,30 @@ npx supabase db push
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `port is already allocated` | Another project owns it | Change `API_PORT`/`ADMIN_PORT` in `.env` |
-| Health check fails, logs show Supabase errors | Wrong or missing keys | Check `.env`; service key must be `service_role`, not anon |
-| Dashboard loads but shows all zeros | `PUBLIC_API_URL` wrong at build time | Fix `.env`, then rebuild **admin** (not just restart) |
-| Widget doesn't appear on a customer site | HTTPS page loading HTTP widget | Set up a domain and TLS |
-| Widget loads but chat 403s | Origin not in `bot_domains` | Add the domain in the dashboard |
-| Replies arrive all at once, not streamed | Nginx buffering | `proxy_buffering off` in the location block |
-| Container exits immediately | Missing required env var | `docker compose logs api` names the variable |
+| `port is already allocated` | Something else took 18000/13000 | `ss -tulpn \| grep LISTEN`, then change ports in `.env` |
+| Certbot fails the challenge | DNS not propagated, or Cloudflare proxy on | `dig +short chat.orb-itworks.com`; set Cloudflare to DNS-only |
+| `nginx -t` fails | Config error | Read the message — it names the file and line. Do **not** reload until it passes |
+| 502 Bad Gateway | Container down | `docker compose ... ps` and `logs api` |
+| Dashboard loads but shows zeros | `PUBLIC_API_URL` wrong at build time | Fix `.env`, rebuild **admin** |
+| Reply arrives all at once | Nginx buffering the SSE stream | Confirm the `/chat/stream` block has `proxy_buffering off` |
+| Widget missing on customer site | Domain not registered, or site is HTTP | Add domain in dashboard; ensure the customer site is HTTPS |
+| Container exits at once | Missing env var | `docker compose ... logs api` names the variable |
 
 ```bash
-# Useful commands
+# Everyday commands
 docker compose -f infra/docker-compose.yml logs -f api
 docker compose -f infra/docker-compose.yml restart api
-docker compose -f infra/docker-compose.yml down          # stop (keeps images)
-docker stats --no-stream                                  # resource usage
+docker compose -f infra/docker-compose.yml down     # stop; images kept
+docker stats --no-stream
+```
+
+### Rollback
+
+```bash
+cd /opt/orbitworks/chatbot
+docker compose -f infra/docker-compose.yml down   # chatbot stops; other projects unaffected
+
+# Remove the Nginx site entirely
+sudo rm /etc/nginx/sites-enabled/orbitworks-chatbot
+sudo nginx -t && sudo systemctl reload nginx
 ```

@@ -7,10 +7,13 @@
 #
 # PORT BINDING
 # ------------
-# By default both ports bind to 0.0.0.0, so the app is reachable at
-# http://<vps-ip>:18000 with no reverse proxy — which is what "IP and port for
-# now" needs. Once a domain and Nginx are in front, change the mappings to
-# "127.0.0.1:18000:8000" so only the proxy can reach them.
+# Both services bind to 127.0.0.1 by default: Nginx is the only way in, and the
+# server's ufw allows just 22/80/443, so exposing these publicly would be
+# blocked anyway. Ports 18000/13000 are used because 8000 and 3000 are already
+# taken by another project on this VPS.
+#
+# To reach a service directly for debugging (not recommended in production):
+#   API_BIND=0.0.0.0 docker compose ... up -d
 #
 # Run from the REPOSITORY ROOT, not from infra/:
 #   docker compose -f infra/docker-compose.yml --env-file .env up -d --build
@@ -26,7 +29,7 @@ services:
     container_name: orbitworks-chatbot-api
     restart: unless-stopped
     ports:
-      - "${API_BIND:-0.0.0.0}:${API_PORT:-18000}:8000"
+      - "${API_BIND:-127.0.0.1}:${API_PORT:-18000}:8000"
     environment:
       # Secrets come from the .env file passed with --env-file; they are never
       # baked into the image.
@@ -56,13 +59,13 @@ services:
         # they must be build args. Public values only — never the service key.
         NEXT_PUBLIC_SUPABASE_URL: ${SUPABASE_URL}
         NEXT_PUBLIC_SUPABASE_ANON_KEY: ${SUPABASE_KEY}
-        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:?PUBLIC_API_URL is required (e.g. http://your-vps-ip:18000)}
-        NEXT_PUBLIC_WIDGET_URL: ${PUBLIC_WIDGET_URL:?PUBLIC_WIDGET_URL is required (e.g. http://your-vps-ip:18000/widget.js)}
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:?PUBLIC_API_URL is required (e.g. https://chat.orb-itworks.com)}
+        NEXT_PUBLIC_WIDGET_URL: ${PUBLIC_WIDGET_URL:?PUBLIC_WIDGET_URL is required (e.g. https://chat.orb-itworks.com/widget.js)}
     image: orbitworks/chatbot-admin:latest
     container_name: orbitworks-chatbot-admin
     restart: unless-stopped
     ports:
-      - "${ADMIN_BIND:-0.0.0.0}:${ADMIN_PORT:-13000}:3000"
+      - "${ADMIN_BIND:-127.0.0.1}:${ADMIN_PORT:-13000}:3000"
     depends_on:
       - api
     networks:
