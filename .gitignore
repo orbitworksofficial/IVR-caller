@@ -18,3 +18,6 @@ next-env.d.ts
 supabase/.temp/
 supabase/.branches/
 .env.keys
+
+# Client knowledge source files (may contain confidential business content)
+knowledge/
