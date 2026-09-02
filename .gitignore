@@ -13,3 +13,8 @@ dist/
 *.tsbuildinfo
 next-env.d.ts
 .venv/
+
+# Supabase CLI local state
+supabase/.temp/
+supabase/.branches/
+.env.keys
