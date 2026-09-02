@@ -38,21 +38,35 @@ echo
 
 # ── 1. DNS must resolve before certbot can work ──────────────────────────────
 say "Checking DNS"
-SERVER_IP="$(curl -fsS --max-time 10 ifconfig.me 2>/dev/null || echo '')"
-[ -n "$SERVER_IP" ] || warn "Could not determine this server's public IP"
-echo "     This server: ${SERVER_IP:-unknown}"
+
+# Collect BOTH address families. A dual-stack server has each, and comparing an
+# IPv4 A record against the server's IPv6 address would fail spuriously.
+SERVER_IPV4="$(curl -fsS -4 --max-time 10 ifconfig.me 2>/dev/null || echo '')"
+SERVER_IPV6="$(curl -fsS -6 --max-time 10 ifconfig.me 2>/dev/null || echo '')"
+# Fall back to the locally configured address if the outbound lookup fails.
+[ -n "$SERVER_IPV4" ] || SERVER_IPV4="$(ip -4 addr show scope global 2>/dev/null     | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)"
+
+echo "     This server IPv4: ${SERVER_IPV4:-none}"
+[ -n "$SERVER_IPV6" ] && echo "     This server IPv6: $SERVER_IPV6"
+[ -n "$SERVER_IPV4" ] || [ -n "$SERVER_IPV6" ]   || warn "Could not determine this server's public IP"
 
 dns_ok=true
 for d in "$API_DOMAIN" "$ADMIN_DOMAIN"; do
-  resolved="$(dig +short "$d" 2>/dev/null | tail -1)"
-  if [ -z "$resolved" ]; then
+  # A records (IPv4) and AAAA records (IPv6) are queried separately.
+  a_rec="$(dig +short A "$d" 2>/dev/null | grep -E '^[0-9]+\.' | head -1)"
+  aaaa_rec="$(dig +short AAAA "$d" 2>/dev/null | grep ':' | head -1)"
+
+  if [ -z "$a_rec" ] && [ -z "$aaaa_rec" ]; then
     warn "$d does not resolve yet"
     dns_ok=false
-  elif [ -n "$SERVER_IP" ] && [ "$resolved" != "$SERVER_IP" ]; then
-    warn "$d resolves to $resolved, not $SERVER_IP"
-    dns_ok=false
+  elif [ -n "$a_rec" ] && [ -n "$SERVER_IPV4" ] && [ "$a_rec" = "$SERVER_IPV4" ]; then
+    ok "$d -> $a_rec (IPv4)"
+  elif [ -n "$aaaa_rec" ] && [ -n "$SERVER_IPV6" ] && [ "$aaaa_rec" = "$SERVER_IPV6" ]; then
+    ok "$d -> $aaaa_rec (IPv6)"
   else
-    ok "$d -> $resolved"
+    warn "$d resolves to ${a_rec:-$aaaa_rec}, which is not this server"
+    warn "  this server is IPv4 ${SERVER_IPV4:-none} / IPv6 ${SERVER_IPV6:-none}"
+    dns_ok=false
   fi
 done
 
