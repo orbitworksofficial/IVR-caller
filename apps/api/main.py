@@ -1,40 +1,77 @@
-import time
+import os
 import logging
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from supabase import Client
 
-from apps.api.schemas import ChatRequest, ChatResponse, WidgetConfigResponse, HealthResponse
+from apps.api.schemas import (
+    ChatRequest, ChatResponse, WidgetConfigResponse, HealthResponse
+)
 from apps.api.dependencies import (
     get_supabase_client, get_ai_provider, get_retriever,
     get_guardrails, get_memory_manager
 )
-from apps.api.telemetry import TelemetryTracker
+from apps.api.security import (
+    resolve_bot, enforce_allowed_domain, enforce_rate_limit
+)
+from apps.api.chat_service import ChatPipeline
+from apps.api.admin_routes import router as admin_router
 from ai.providers.openai import OpenAIProvider
-from ai.providers.routing import ModelRouter
 from ai.rag.retrieval import SecurityEnforcedRetrieval
 from ai.rag.guardrails import GroundingGuardrails
 from ai.memory.memory_manager import MemoryManager
 from ai.prompts.config import TenantConfigResolver
-from ai.tools.schemas import get_tools_definition
-from ai.tools.executor import ToolExecutor
-from ai.optimization.token_optimizer import TokenOptimizer
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="OrbitWorks Chatbot API",
     description="Multi-tenant AI chatbot backend for OrbitWorks",
-    version="1.0.0"
+    version="1.1.0"
 )
 
+# The widget is embedded on arbitrary customer sites, so the browser preflight
+# must succeed from any origin. Per-bot authorization is enforced separately
+# against bot_domains inside each chat request (see security.enforce_allowed_domain),
+# which is the check that actually restricts who may use a given bot.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
+app.include_router(admin_router)
+
+
+# ── Widget bundle ────────────────────────────────────────────────────────────
+# Serves the built widget so a customer's <script src="…/widget.js"> resolves.
+# In production Cloudflare caches this; here it is served directly for dev.
+_WIDGET_DIST = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "apps", "widget", "dist",
+)
+
+
+@app.get("/widget.js", tags=["Widget"], include_in_schema=False)
+async def serve_widget():
+    """Serves the compiled embeddable widget bundle."""
+    from fastapi.responses import FileResponse
+
+    bundle = os.path.join(_WIDGET_DIST, "widget.js")
+    if not os.path.exists(bundle):
+        raise HTTPException(
+            status_code=404,
+            detail="Widget bundle not built. Run 'npm run build' in apps/widget.",
+        )
+
+    return FileResponse(
+        bundle,
+        media_type="application/javascript",
+        headers={"Cache-Control": "public, max-age=300"},
+    )
 
 
 @app.get("/health", response_model=HealthResponse, tags=["System"])
@@ -42,7 +79,7 @@ async def health_check():
     """Health check endpoint."""
     return HealthResponse(
         status="healthy",
-        version="1.0.0",
+        version="1.1.0",
         service="OrbitWorks Chatbot API"
     )
 
@@ -54,9 +91,8 @@ async def get_usage_summary(
     supabase: Client = Depends(get_supabase_client),
 ):
     """
-    Phase 4: Returns usage and cost summary for a tenant.
+    Returns usage and cost summary for a tenant.
     Shows recent LLM calls, total cost, avg latency, and model distribution.
-    Used for cost monitoring and model policy decisions.
     """
     config_resolver = TenantConfigResolver(supabase_client=supabase)
     summary = await config_resolver.get_tenant_usage_summary(
@@ -68,252 +104,144 @@ async def get_usage_summary(
 @app.get("/widget/config", response_model=WidgetConfigResponse, tags=["Widget"])
 async def get_widget_config(
     bot_id: str,
-    supabase: Client = Depends(get_supabase_client)
+    request: Request,
+    supabase: Client = Depends(get_supabase_client),
 ):
     """
-    Returns the bot configuration for the frontend widget.
+    Returns public bot configuration for the frontend widget.
     Called once on widget initialization.
+
+    Only non-sensitive, public fields are returned (§05) — never system
+    prompts, escalation contacts, or any tenant identifier.
     """
-    response = supabase.table("bots").select(
-        "id, name, welcome_message, booking_url, support_mode_enabled, sales_mode_enabled"
-    ).eq("id", bot_id).execute()
+    bot = await resolve_bot(supabase, bot_id)
+    await enforce_allowed_domain(supabase, bot_id, request)
 
-    if not response.data:
-        raise HTTPException(status_code=404, detail=f"Bot '{bot_id}' not found.")
-
-    bot = response.data[0]
     return WidgetConfigResponse(
-        bot_id=bot["id"],
-        bot_name=bot["name"],
+        bot_id=str(bot["id"]),
+        bot_name=bot.get("name") or "Assistant",
         welcome_message=bot.get("welcome_message"),
         booking_url=bot.get("booking_url"),
         support_mode_enabled=bot.get("support_mode_enabled", True),
-        sales_mode_enabled=bot.get("sales_mode_enabled", True)
+        sales_mode_enabled=bot.get("sales_mode_enabled", True),
+        primary_color=bot.get("primary_color") or "#E6007E",
+        secondary_color=bot.get("secondary_color") or "#1A1B3A",
+        logo_url=bot.get("logo_url"),
+        placement=bot.get("placement") or "bottom-right",
+        launcher_label=bot.get("launcher_label"),
+    )
+
+
+async def _prepare_chat(
+    bot_id: str,
+    session_id: str,
+    message: str,
+    request: Request,
+    supabase: Client,
+    provider: OpenAIProvider,
+    retriever: SecurityEnforcedRetrieval,
+    guardrails: GroundingGuardrails,
+    memory: MemoryManager,
+) -> ChatPipeline:
+    """
+    Shared front-door for both chat endpoints:
+      1. Resolve bot_id -> tenant_id (never trust a client-supplied tenant)
+      2. Enforce the bot's allowed-domain list
+      3. Enforce the per-session rate limit
+      4. Run the input safety guardrail
+    """
+    bot = await resolve_bot(supabase, bot_id)
+    await enforce_allowed_domain(supabase, bot_id, request)
+    enforce_rate_limit(f"{bot_id}:{session_id}")
+
+    if not guardrails.is_safe_input(message):
+        reason = guardrails.get_injection_reason(message)
+        logger.warning(f"Input blocked. Bot={bot_id} Reason={reason}")
+        raise HTTPException(
+            status_code=400,
+            detail="I'm here to help with questions about our services.",
+        )
+
+    return ChatPipeline(
+        supabase=supabase,
+        provider=provider,
+        retriever=retriever,
+        guardrails=guardrails,
+        memory=memory,
+        bot=bot,
     )
 
 
 @app.post("/chat", response_model=ChatResponse, tags=["Chat"])
 async def chat(
-    request: ChatRequest,
+    payload: ChatRequest,
+    request: Request,
     supabase: Client = Depends(get_supabase_client),
     provider: OpenAIProvider = Depends(get_ai_provider),
     retriever: SecurityEnforcedRetrieval = Depends(get_retriever),
     guardrails: GroundingGuardrails = Depends(get_guardrails),
-    memory: MemoryManager = Depends(get_memory_manager)
+    memory: MemoryManager = Depends(get_memory_manager),
 ):
     """
-    Core chat endpoint — full Phase 2 pipeline:
-    1.  Input guardrail check
-    2.  Activate RLS for this request (tenant isolation at DB level)
-    3.  Get or create conversation record
-    4.  Load conversation history + build memory context
-    5.  Embed user query
-    6.  Hybrid RAG retrieval with FTS fallback
-    7.  Compile system prompt with bot config + retrieved knowledge + memory
-    8.  Route to ModelRouter → tool_call() or generate()
-    9.  Execute tool calls via ToolExecutor (create_lead, handoff, etc.)
-    10. Output grounding verification
-    11. Persist messages to database
-    12. Log telemetry
+    Core chat endpoint. Returns the complete response as JSON.
+
+    Pipeline: resolve bot -> domain check -> rate limit -> input guardrail ->
+    RLS activation -> conversation -> memory -> retrieval -> grounding/abstain ->
+    prompt -> model routing -> tools -> output grounding -> persist -> telemetry.
     """
-    start_time = time.time()
-
-    # ── 1. Input safety check ────────────────────────────────────────────────
-    if not guardrails.is_safe_input(request.message):
-        reason = guardrails.get_injection_reason(request.message)
-        logger.warning(f"Input blocked. Tenant={request.tenant_id} Reason={reason}")
-        raise HTTPException(status_code=400, detail="Message blocked by safety guardrails.")
-
-    # ── 2. Activate RLS session variable (DB-level tenant isolation) ─────────
-    # This makes Supabase RLS policies on all tables enforce tenant_id correctly.
-    supabase.rpc(
-        "set_config",
-        {"setting": "app.current_tenant_id", "value": request.tenant_id}
-    ).execute()
-
-    # ── 3. Get or create conversation ────────────────────────────────────────
-    conversation_id = request.conversation_id
-    if not conversation_id:
-        conv_resp = supabase.table("conversations").insert({
-            "tenant_id": request.tenant_id,
-            "bot_id": request.bot_id,
-            "session_id": request.session_id,
-            "status": "active"
-        }).execute()
-        conversation_id = conv_resp.data[0]["id"]
-
-    # ── 4. Load history + build memory context ───────────────────────────────
-    history_resp = supabase.table("messages").select(
-        "role, content"
-    ).eq("conversation_id", conversation_id).order("created_at").execute()
-    history = history_resp.data or []
-
-    # Split into recent (keep) and older (summarize)
-    split = memory.split_history(history)
-    recent_messages = split["recent"]
-
-    # Extract structured memory from full history for sales context
-    structured_memory = {}
-    conversation_summary = ""
-    if history:
-        structured_memory = await memory.extract_structured_memory(history, provider)
-        # Summarize older turns if any
-        if split["to_summarize"]:
-            existing_summary_resp = supabase.table("conversations").select(
-                "summary"
-            ).eq("id", conversation_id).execute()
-            existing_summary = ""
-            if existing_summary_resp.data:
-                existing_summary = existing_summary_resp.data[0].get("summary") or ""
-            conversation_summary = await memory.generate_summary(
-                split["to_summarize"], provider, existing_summary
-            )
-            # Persist updated summary
-            supabase.table("conversations").update(
-                {"summary": conversation_summary}
-            ).eq("id", conversation_id).execute()
-
-    memory_context = memory.build_context_block(
-        structured_memory=structured_memory,
-        conversation_summary=conversation_summary,
+    pipeline = await _prepare_chat(
+        payload.bot_id, payload.session_id, payload.message,
+        request, supabase, provider, retriever, guardrails, memory,
     )
 
-    # ── 5. Save user message ─────────────────────────────────────────────────
-    supabase.table("messages").insert({
-        "tenant_id": request.tenant_id,
-        "conversation_id": conversation_id,
-        "role": "user",
-        "content": request.message
-    }).execute()
-
-    # ── 6. Embed + Hybrid RAG retrieval with FTS fallback ────────────────────
-    query_embedding = await provider.embed(request.message)
-    retrieval_result = await retriever.retrieve_with_fallback(
-        tenant_id=request.tenant_id,
-        query_text=request.message,
-        query_embedding=query_embedding,
-        limit=6,  # fetch extra so compressor can prune duplicates
+    result = await pipeline.run(
+        message=payload.message,
+        session_id=payload.session_id,
+        conversation_id=payload.conversation_id,
     )
-    raw_chunks = retrieval_result["chunks"]
-    retrieval_mode = retrieval_result["retrieval_mode"]
+    return ChatResponse(**result)
 
-    # Phase 3: compress + deduplicate chunks within token budget
-    optimizer = TokenOptimizer()
-    chunks, knowledge_tokens = optimizer.compress_knowledge(raw_chunks)
 
-    # Phase 3: hard abstain if retrieval is empty or all scores below threshold
-    if guardrails.should_abstain(chunks):
-        logger.info(f"Abstaining — no grounded chunks. Tenant={request.tenant_id}")
-        return ChatResponse(
-            response="I don't have specific information about that in my knowledge base. "
-                     "Would you like me to connect you with our team who can help directly?",
+@app.get("/chat/stream", tags=["Chat"])
+async def chat_stream(
+    request: Request,
+    bot_id: str,
+    session_id: str,
+    message: str,
+    conversation_id: str = None,
+    supabase: Client = Depends(get_supabase_client),
+    provider: OpenAIProvider = Depends(get_ai_provider),
+    retriever: SecurityEnforcedRetrieval = Depends(get_retriever),
+    guardrails: GroundingGuardrails = Depends(get_guardrails),
+    memory: MemoryManager = Depends(get_memory_manager),
+):
+    """
+    Streaming chat over Server-Sent Events (§03/§08).
+
+    A GET endpoint so the widget can use the native EventSource API. Emits
+    `meta`, `token`, `done` and `error` events; see ChatPipeline.run_streaming.
+    """
+    if not message or not message.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty.")
+    if len(message) > 4000:
+        raise HTTPException(status_code=400, detail="Message is too long.")
+
+    pipeline = await _prepare_chat(
+        bot_id, session_id, message,
+        request, supabase, provider, retriever, guardrails, memory,
+    )
+
+    return StreamingResponse(
+        pipeline.run_streaming(
+            message=message,
+            session_id=session_id,
             conversation_id=conversation_id,
-            grounded=False,
-            model="abstain",
-        )
-
-    grounded = guardrails.meets_grounding_threshold(chunks)
-    retrieved_text = "\n\n".join([c["content"] for c in chunks]) if chunks else ""
-
-    # ── 7. Compile system prompt ─────────────────────────────────────────────
-    config_resolver = TenantConfigResolver(supabase_client=supabase)
-    bot_config = await config_resolver.get_bot_config(request.bot_id)
-
-    from ai.prompts.templates import compile_system_prompt
-    system_prompt = compile_system_prompt(
-        business_name=bot_config.get("name", "OrbitWorks"),
-        business_context=bot_config.get("system_personality", "A helpful AI assistant."),
-        retrieved_knowledge=retrieved_text,
-        support_mode_enabled=bot_config.get("support_mode_enabled", True),
-        sales_mode_enabled=bot_config.get("sales_mode_enabled", True),
-        memory_context=memory_context,
-    )
-
-    # ── 8. Build message list — trim history to token budget ─────────────────
-    router = ModelRouter(provider=provider)
-    tools = get_tools_definition()
-    trimmed_history = optimizer.trim_history(recent_messages)
-
-    messages = [{"role": "system", "content": system_prompt}]
-    messages += trimmed_history
-    messages.append({"role": "user", "content": request.message})
-
-    # Phase 3: log token usage before sending to API
-    token_report = optimizer.build_usage_report(system_prompt, trimmed_history, chunks)
-    logger.info(
-        f"Token budget — system:{token_report['system_tokens']} "
-        f"history:{token_report['history_tokens']} "
-        f"knowledge:{token_report['knowledge_tokens']} "
-        f"total_est:{token_report['total_estimated']}"
-    )
-
-    # Always attempt tool_call — ModelRouter routes to Terra automatically
-    result = await router.tool_call(messages=messages, tools=tools)
-    routing_info = result.get("routing", {})
-    tool_calls = result.get("tool_calls", [])
-
-    # ── 9. Execute any tool calls via ToolExecutor ───────────────────────────
-    answer = ""
-    if tool_calls:
-        tool_executor = ToolExecutor(
-            supabase_client=supabase,
-            tenant_id=request.tenant_id,
-            bot_id=request.bot_id,
-        )
-        # Execute each tool and inject results back into messages
-        tool_messages = list(messages)
-        tool_messages.append(result["message"])  # assistant message with tool_calls
-
-        for tc in tool_calls:
-            tool_result = await tool_executor.execute(
-                tool_name=tc.function.name,
-                arguments=__import__("json").loads(tc.function.arguments),
-            )
-            tool_messages.append(
-                ToolExecutor.build_tool_result_message(tc.id, tool_result)
-            )
-
-        # Generate final response with tool results in context
-        final_result = await router.generate(messages=tool_messages)
-        answer = final_result.get("text", "")
-        usage = final_result.get("usage", {})
-        used_model = final_result.get("routing", {}).get("model", "gpt-5.6-luna")
-    else:
-        # No tool calls — use the text response directly
-        answer = result["message"].content or ""
-        usage = {}
-        used_model = routing_info.get("model", "gpt-5.6-luna")
-
-    # ── 10. Output grounding check ───────────────────────────────────────────
-    source_contents = [c["content"] for c in chunks]
-    output_grounded = (
-        guardrails.verify_response_grounded(answer, source_contents)
-        if source_contents else True
-    )
-
-    # ── 11. Persist assistant message ────────────────────────────────────────
-    supabase.table("messages").insert({
-        "tenant_id": request.tenant_id,
-        "conversation_id": conversation_id,
-        "role": "assistant",
-        "content": answer,
-    }).execute()
-
-    # ── 12. Log telemetry ────────────────────────────────────────────────────
-    latency_ms = int((time.time() - start_time) * 1000)
-    telemetry = TelemetryTracker(supabase_client=supabase)
-    await telemetry.log_usage_event(
-        tenant_id=request.tenant_id,
-        conversation_id=conversation_id,
-        model=used_model,
-        input_tokens=usage.get("prompt_tokens", 0),
-        output_tokens=usage.get("completion_tokens", 0),
-        latency_ms=latency_ms,
-    )
-
-    return ChatResponse(
-        response=answer,
-        conversation_id=conversation_id,
-        grounded=grounded and output_grounded,
-        model=used_model,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # Prevents nginx from buffering the stream and defeating streaming.
+            "X-Accel-Buffering": "no",
+        },
     )

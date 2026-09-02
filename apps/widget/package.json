@@ -1,0 +1,19 @@
+{
+  "name": "@orbitworks/chat-widget",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Embeddable OrbitWorks chat widget — one script tag, any site.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "preact": "^10.25.4"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7"
+  }
+}

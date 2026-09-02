@@ -4,3 +4,12 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints/
 *.pdf
+
+# Frontend
+node_modules/
+.next/
+dist/
+.env.local
+*.tsbuildinfo
+next-env.d.ts
+.venv/

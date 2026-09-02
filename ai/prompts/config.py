@@ -128,18 +128,24 @@ class TenantConfigResolver:
         Phase 4: Aggregates usage and cost metrics for a tenant.
         Used by the /usage endpoint for cost monitoring.
         """
-        resp = self.supabase.table("usage_events").select(
-            "model, input_tokens, output_tokens, cost_usd, latency_ms, created_at"
-        ).eq("tenant_id", tenant_id).order(
-            "created_at", desc=True
-        ).limit(limit).execute()
+        # select("*") so this works whether the schema uses cost_usd/latency_ms
+        # or the estimated_cost/latency names TelemetryTracker writes.
+        resp = self.supabase.table("usage_events").select("*").eq(
+            "tenant_id", tenant_id
+        ).order("created_at", desc=True).limit(limit).execute()
 
         events = resp.data or []
         if not events:
             return {"events": 0, "total_cost_usd": 0.0, "avg_latency_ms": 0}
 
-        total_cost = sum(float(e.get("cost_usd", 0) or 0) for e in events)
-        total_latency = sum(int(e.get("latency_ms", 0) or 0) for e in events)
+        def _cost(e: Dict[str, Any]) -> float:
+            return float(e.get("cost_usd") or e.get("estimated_cost") or 0)
+
+        def _latency(e: Dict[str, Any]) -> int:
+            return int(e.get("latency_ms") or e.get("latency") or 0)
+
+        total_cost = sum(_cost(e) for e in events)
+        total_latency = sum(_latency(e) for e in events)
         input_tokens = sum(int(e.get("input_tokens", 0) or 0) for e in events)
         output_tokens = sum(int(e.get("output_tokens", 0) or 0) for e in events)
 
