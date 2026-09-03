@@ -76,8 +76,14 @@ async def resolve_bot(supabase: Client, bot_id: str) -> Dict[str, Any]:
     if cached and (time.time() - cached[0]) < _BOT_CACHE_TTL:
         return cached[1]
 
+    # Must use the service-role client. The RLS policy on `bots` gates on
+    # app.current_tenant_id, but this lookup is what DETERMINES the tenant —
+    # with the anon key it returns nothing and every request 404s.
+    from apps.api.supabase_client import get_supabase_admin
+    db = get_supabase_admin()
+
     try:
-        response = supabase.table("bots").select("*").eq("id", bot_id).execute()
+        response = db.table("bots").select("*").eq("id", bot_id).execute()
     except Exception as e:
         # An invalid UUID string reaches Postgres as a cast error — treat it as
         # "not found" rather than leaking a 500 with database internals.
@@ -121,8 +127,14 @@ async def enforce_allowed_domain(
     if not origin:
         return  # non-browser caller
 
+    # Service role for the same reason as resolve_bot: this check decides
+    # whether the request is allowed at all, before tenant context is set.
+    from apps.api.supabase_client import get_supabase_admin
+
     try:
-        resp = supabase.table("bot_domains").select("domain").eq("bot_id", bot_id).execute()
+        resp = get_supabase_admin().table("bot_domains").select(
+            "domain"
+        ).eq("bot_id", bot_id).execute()
     except Exception as e:
         logger.warning(f"bot_domains lookup failed for '{bot_id}': {e} — allowing request.")
         return
