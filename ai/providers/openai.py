@@ -20,7 +20,21 @@ class OpenAIProvider(LLMProvider):
 
     def __init__(self, api_key: str = None, base_url: str = None):
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.base_url = base_url or os.getenv("OPENAI_BASE_URL")
+
+        # An EMPTY OPENAI_BASE_URL must be treated as "unset". Docker Compose
+        # writes ${OPENAI_BASE_URL:-} as an empty string rather than omitting
+        # the variable, and AsyncOpenAI(base_url="") builds requests against an
+        # empty base — every call then dies with APIConnectionError even though
+        # the network is fine.
+        raw_base = base_url if base_url is not None else os.getenv("OPENAI_BASE_URL")
+        self.base_url = raw_base.strip() if raw_base and raw_base.strip() else None
+
+        # Passing base_url=None is NOT sufficient: the SDK falls back to reading
+        # OPENAI_BASE_URL itself, and an empty value there still produces an
+        # empty base. Clear it so the SDK uses its own default endpoint.
+        if self.base_url is None and os.environ.get("OPENAI_BASE_URL", "").strip() == "":
+            os.environ.pop("OPENAI_BASE_URL", None)
+
         self._is_groq = "groq.com" in (self.base_url or "")
 
         self.client = AsyncOpenAI(

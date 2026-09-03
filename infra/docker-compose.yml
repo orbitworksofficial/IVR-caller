@@ -37,7 +37,11 @@ services:
       SUPABASE_KEY: ${SUPABASE_KEY:?SUPABASE_KEY is required}
       SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY:?SUPABASE_SERVICE_KEY is required}
       OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      # Deliberately NOT passed when unset: compose would set it to an empty
+      # string, and the OpenAI SDK treats an empty base_url as a real value,
+      # producing APIConnectionError on every call. The provider also guards
+      # against this, but not sending it at all is the cleaner fix.
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
       ENVIRONMENT: ${ENVIRONMENT:-production}
       RATE_LIMIT_MAX_REQUESTS: ${RATE_LIMIT_MAX_REQUESTS:-20}
       RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
