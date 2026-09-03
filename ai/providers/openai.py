@@ -1,5 +1,6 @@
 import os
 from typing import AsyncGenerator, Dict, Any, List
+import httpx
 from openai import AsyncOpenAI
 from ai.providers.base import LLMProvider
 
@@ -24,7 +25,34 @@ class OpenAIProvider(LLMProvider):
 
         self.client = AsyncOpenAI(
             api_key=self.api_key,
-            base_url=self.base_url
+            base_url=self.base_url,
+            http_client=self._build_http_client(),
+            max_retries=3,
+        )
+
+    @staticmethod
+    def _build_http_client() -> httpx.AsyncClient:
+        """
+        Builds the HTTP client used for every API call.
+
+        On a dual-stack host whose IPv6 is not routable — which is the default
+        for Docker's bridge network — DNS can return IPv6-only records for
+        api.openai.com and every request dies with APIConnectionError. Setting
+        local_address to 0.0.0.0 binds the socket to IPv4, so resolution and
+        connection stay on a route that works.
+
+        Set OPENAI_ALLOW_IPV6=true to opt out on a host with working IPv6.
+        """
+        timeout = httpx.Timeout(60.0, connect=15.0)
+        limits = httpx.Limits(max_connections=50, max_keepalive_connections=10)
+
+        if os.getenv("OPENAI_ALLOW_IPV6", "").lower() in ("1", "true", "yes"):
+            return httpx.AsyncClient(timeout=timeout, limits=limits)
+
+        return httpx.AsyncClient(
+            timeout=timeout,
+            limits=limits,
+            transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0", retries=2),
         )
 
     def _resolve_model(self, model: str) -> str:

@@ -44,6 +44,14 @@ services:
       WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
     networks:
       - chatbot
+    # Force IPv4 resolvers. This host is dual-stack, but Docker's default
+    # bridge does not route IPv6 — and Docker's embedded resolver was
+    # returning IPv6-only records for api.openai.com, so every OpenAI call
+    # failed with APIConnectionError while plain curl (which falls back to
+    # IPv4) still worked.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     logging:
       driver: json-file
       options:
