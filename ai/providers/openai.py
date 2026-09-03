@@ -1,4 +1,5 @@
 import os
+import asyncio
 from typing import AsyncGenerator, Dict, Any, List
 import httpx
 from openai import AsyncOpenAI
@@ -14,6 +15,33 @@ GROQ_MODEL_MAP = {
     "gpt-5.6-luna":  "llama-3.1-8b-instant",       # fast / low cost
     "gpt-5.6-terra": "llama-3.3-70b-versatile",     # capable / higher cost
 }
+
+class _IPv4Transport(httpx.AsyncHTTPTransport):
+    """
+    Async transport that resolves hostnames to IPv4 only.
+
+    Docker's default bridge network does not route IPv6, but its resolver
+    happily returns AAAA records on a dual-stack host. Any connection that
+    picks one fails with APIConnectionError — intermittently, depending on
+    which record the resolver returns first, which makes it look like a
+    flaky network rather than a configuration problem.
+    """
+
+    async def handle_async_request(self, request):
+        import socket
+        loop = asyncio.get_running_loop()
+        original = loop.getaddrinfo
+
+        async def ipv4_only(host, port, *args, **kwargs):
+            kwargs["family"] = socket.AF_INET
+            return await original(host, port, *args, **kwargs)
+
+        loop.getaddrinfo = ipv4_only
+        try:
+            return await super().handle_async_request(request)
+        finally:
+            loop.getaddrinfo = original
+
 
 class OpenAIProvider(LLMProvider):
     """OpenAI API implementation. Supports Groq as a dev drop-in via OPENAI_BASE_URL."""
@@ -63,11 +91,12 @@ class OpenAIProvider(LLMProvider):
         if os.getenv("OPENAI_ALLOW_IPV6", "").lower() in ("1", "true", "yes"):
             return httpx.AsyncClient(timeout=timeout, limits=limits)
 
-        return httpx.AsyncClient(
-            timeout=timeout,
-            limits=limits,
-            transport=httpx.AsyncHTTPTransport(local_address="0.0.0.0", retries=2),
-        )
+        # local_address alone is not enough: httpx still resolves the host
+        # normally and may pick an AAAA record, then fail to route to it.
+        # Patching getaddrinfo to request AF_INET makes IPv4 selection
+        # deterministic for every connection this client opens.
+        transport = _IPv4Transport(local_address="0.0.0.0", retries=2)
+        return httpx.AsyncClient(timeout=timeout, limits=limits, transport=transport)
 
     def _resolve_model(self, model: str) -> str:
         """Maps production model names to provider-compatible names."""

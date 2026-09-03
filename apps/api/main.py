@@ -194,11 +194,22 @@ async def chat(
         request, supabase, provider, retriever, guardrails, memory,
     )
 
-    result = await pipeline.run(
-        message=payload.message,
-        session_id=payload.session_id,
-        conversation_id=payload.conversation_id,
-    )
+    try:
+        result = await pipeline.run(
+            message=payload.message,
+            session_id=payload.session_id,
+            conversation_id=payload.conversation_id,
+        )
+    except Exception as e:
+        # A bare 500 shows the visitor "Something went wrong" with no clue for
+        # us. Log the real cause and return a readable message instead.
+        logger.exception(f"Chat failed for bot '{payload.bot_id}': {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="I'm having trouble reaching my knowledge right now. "
+                   "Please try again in a moment, or email sales@orb-itworks.com.",
+        )
+
     return ChatResponse(**result)
 
 
