@@ -39,33 +39,45 @@ echo
 # ── 1. DNS must resolve before certbot can work ──────────────────────────────
 say "Checking DNS"
 
-# Collect BOTH address families. A dual-stack server has each, and comparing an
-# IPv4 A record against the server's IPv6 address would fail spuriously.
-SERVER_IPV4="$(curl -fsS -4 --max-time 10 ifconfig.me 2>/dev/null || echo '')"
-SERVER_IPV6="$(curl -fsS -6 --max-time 10 ifconfig.me 2>/dev/null || echo '')"
-# Fall back to the locally configured address if the outbound lookup fails.
-[ -n "$SERVER_IPV4" ] || SERVER_IPV4="$(ip -4 addr show scope global 2>/dev/null     | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)"
+# dig is not installed by default on a minimal Ubuntu image.
+if ! command -v dig >/dev/null 2>&1; then
+  say "Installing dnsutils (needed to check DNS)"
+  apt-get update -qq >/dev/null 2>&1 || true
+  apt-get install -y -qq dnsutils >/dev/null 2>&1 || true
+fi
+
+resolve_a() { dig +short A "$1" 2>/dev/null | grep -E '^[0-9]+\.' | head -1; }
+resolve_aaaa() { dig +short AAAA "$1" 2>/dev/null | grep ':' | head -1; }
+
+# Both address families: a dual-stack server has each, and comparing an IPv4
+# A record against the server's IPv6 address would fail spuriously.
+SERVER_IPV4="$(curl -fsS -4 --max-time 10 ifconfig.me 2>/dev/null || true)"
+SERVER_IPV6="$(curl -fsS -6 --max-time 10 ifconfig.me 2>/dev/null || true)"
+
+if [ -z "$SERVER_IPV4" ]; then
+  SERVER_IPV4="$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -1 || true)"
+fi
 
 echo "     This server IPv4: ${SERVER_IPV4:-none}"
-[ -n "$SERVER_IPV6" ] && echo "     This server IPv6: $SERVER_IPV6"
-[ -n "$SERVER_IPV4" ] || [ -n "$SERVER_IPV6" ]   || warn "Could not determine this server's public IP"
+if [ -n "$SERVER_IPV6" ]; then
+  echo "     This server IPv6: $SERVER_IPV6"
+fi
 
 dns_ok=true
 for d in "$API_DOMAIN" "$ADMIN_DOMAIN"; do
-  # A records (IPv4) and AAAA records (IPv6) are queried separately.
-  a_rec="$(dig +short A "$d" 2>/dev/null | grep -E '^[0-9]+\.' | head -1)"
-  aaaa_rec="$(dig +short AAAA "$d" 2>/dev/null | grep ':' | head -1)"
+  a_rec="$(resolve_a "$d" || true)"
+  aaaa_rec="$(resolve_aaaa "$d" || true)"
 
-  if [ -z "$a_rec" ] && [ -z "$aaaa_rec" ]; then
-    warn "$d does not resolve yet"
-    dns_ok=false
-  elif [ -n "$a_rec" ] && [ -n "$SERVER_IPV4" ] && [ "$a_rec" = "$SERVER_IPV4" ]; then
+  if [ -n "$a_rec" ] && [ -n "$SERVER_IPV4" ] && [ "$a_rec" = "$SERVER_IPV4" ]; then
     ok "$d -> $a_rec (IPv4)"
   elif [ -n "$aaaa_rec" ] && [ -n "$SERVER_IPV6" ] && [ "$aaaa_rec" = "$SERVER_IPV6" ]; then
     ok "$d -> $aaaa_rec (IPv6)"
+  elif [ -z "$a_rec" ] && [ -z "$aaaa_rec" ]; then
+    warn "$d does not resolve yet"
+    dns_ok=false
   else
     warn "$d resolves to ${a_rec:-$aaaa_rec}, which is not this server"
-    warn "  this server is IPv4 ${SERVER_IPV4:-none} / IPv6 ${SERVER_IPV6:-none}"
+    warn "  this server: IPv4 ${SERVER_IPV4:-none} / IPv6 ${SERVER_IPV6:-none}"
     dns_ok=false
   fi
 done
