@@ -128,13 +128,13 @@ chmod 600 .env
 
 ```bash
 cd /opt/orbitworks/chatbot
-docker compose -f infra/docker-compose.yml --env-file .env up -d --build
+./infra/dc up -d --build
 ```
 
 First build takes 3–5 minutes. Check both came up healthy:
 
 ```bash
-docker compose -f infra/docker-compose.yml ps
+./infra/dc ps
 curl -s http://127.0.0.1:18000/health
 curl -s -o /dev/null -w "admin: %{http_code}\n" http://127.0.0.1:13000/login
 ```
@@ -142,7 +142,7 @@ curl -s -o /dev/null -w "admin: %{http_code}\n" http://127.0.0.1:13000/login
 `/health` should return `{"status":"healthy",...}`. If not:
 
 ```bash
-docker compose -f infra/docker-compose.yml logs api --tail=50
+./infra/dc logs api --tail=50
 ```
 
 ---
@@ -251,14 +251,14 @@ bot answers requests from anywhere; once one is, every other origin gets a 403.
 ```bash
 cd /opt/orbitworks/chatbot
 git pull
-docker compose -f infra/docker-compose.yml --env-file .env up -d --build
+./infra/dc up -d --build
 ```
 
 **Changing a `PUBLIC_*` URL requires rebuilding admin**, not just restarting it —
 those values are compiled into the browser bundle:
 
 ```bash
-docker compose -f infra/docker-compose.yml --env-file .env up -d --build admin
+./infra/dc up -d --build admin
 ```
 
 ## Database migrations
@@ -287,9 +287,9 @@ npx supabase db push
 
 ```bash
 # Everyday commands
-docker compose -f infra/docker-compose.yml logs -f api
-docker compose -f infra/docker-compose.yml restart api
-docker compose -f infra/docker-compose.yml down     # stop; images kept
+./infra/dc logs -f api
+./infra/dc restart api
+./infra/dc down     # stop; images kept
 docker stats --no-stream
 ```
 
@@ -297,7 +297,7 @@ docker stats --no-stream
 
 ```bash
 cd /opt/orbitworks/chatbot
-docker compose -f infra/docker-compose.yml down   # chatbot stops; other projects unaffected
+./infra/dc down   # chatbot stops; other projects unaffected
 
 # Remove the Nginx site entirely
 sudo rm /etc/nginx/sites-enabled/orbitworks-chatbot

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#
+# Wrapper so you never have to remember "-f infra/docker-compose.yml --env-file .env".
+#
+#     ./infra/dc logs api --tail=50
+#     ./infra/dc ps
+#     ./infra/dc restart api
+#
+set -euo pipefail
+cd "$(dirname "$0")/.."
+exec docker compose -f infra/docker-compose.yml --env-file .env "$@"

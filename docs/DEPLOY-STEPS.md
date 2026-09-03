@@ -295,16 +295,16 @@ deploy
 cd /opt/orbitworks/chatbot
 
 # Watch the logs live (Ctrl+C to stop)
-docker compose -f infra/docker-compose.yml logs -f api
+./infra/dc logs -f api
 
 # Is everything running?
-docker compose -f infra/docker-compose.yml ps
+./infra/dc ps
 
 # Restart without rebuilding
-docker compose -f infra/docker-compose.yml restart
+./infra/dc restart
 
 # Stop the chatbot (your other projects keep running)
-docker compose -f infra/docker-compose.yml down
+./infra/dc down
 
 # Start it again
 ./infra/deploy.sh
@@ -317,7 +317,7 @@ docker compose -f infra/docker-compose.yml down
 **Site shows 502 Bad Gateway**
 The container stopped. Check why, then restart:
 ```bash
-docker compose -f infra/docker-compose.yml logs api --tail=50
+./infra/dc logs api --tail=50
 ./infra/deploy.sh
 ```
 
@@ -340,7 +340,7 @@ dashboard under **Knowledge**.
 **Nothing works and you want to undo everything**
 ```bash
 cd /opt/orbitworks/chatbot
-docker compose -f infra/docker-compose.yml down
+./infra/dc down
 sudo rm /etc/nginx/sites-enabled/orbitworks-chatbot
 sudo nginx -t && sudo systemctl reload nginx
 ```
