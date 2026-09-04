@@ -204,7 +204,7 @@ class GroundingGuardrails:
         - Only flags numbers that look like facts (prices, percentages, years)
         - Skips very small numbers (1, 2, etc.) which are likely list items
         """
-        if not source_contents:
+        if not response_text or not source_contents:
             return True
 
         sources_combined = " ".join(source_contents)

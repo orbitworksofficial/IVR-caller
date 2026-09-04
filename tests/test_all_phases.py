@@ -26,10 +26,11 @@ def test_all_phases():
     print("       ORBITWORKS AI CHATBOT — ALL 4 PHASES VERIFICATION")
     print("=================================================================")
 
-    p1 = run_phase(1, "Knowledge Ingestion & Hybrid RAG Engine", "venv/bin/python3 test_integration.py")
-    p2 = run_phase(2, "Conversational Memory & Tool Execution", "venv/bin/python3 test_phase2.py")
-    p3 = run_phase(3, "Production Safety & Evaluation Suite", "venv/bin/python3 -c 'from ai.evaluations.run_usman_eval import parse_usman_pdf; cases=parse_usman_pdf(\"300.pdf\"); print(f\"Successfully loaded {len(cases)} evaluation cases.\")'")
-    p4 = run_phase(4, "Multi-Tenant Isolation & Dynamic Replication", "venv/bin/python3 tests/test_multi_tenant_isolation.py")
+    py = f'"{sys.executable}"'
+    p1 = run_phase(1, "Knowledge Ingestion & Hybrid RAG Engine", f"{py} test_integration.py")
+    p2 = run_phase(2, "Conversational Memory & Tool Execution", f"{py} test_phase2.py")
+    p3 = run_phase(3, "Production Safety & Evaluation Suite", f"{py} -c \"from ai.evaluations.run_usman_eval import parse_usman_pdf; cases=parse_usman_pdf('300.pdf'); print('Successfully loaded', len(cases), 'evaluation cases.')\"")
+    p4 = run_phase(4, "Multi-Tenant Isolation & Dynamic Replication", f"{py} tests/test_multi_tenant_isolation.py")
 
     print("\n=================================================================")
     print("                MASTER PROJECT STATUS SUMMARY")

@@ -121,6 +121,7 @@ class ToolExecutor:
         try:
             payload = {
                 "tenant_id": self.tenant_id,
+                "bot_id": self.bot_id,
                 "reason": args.get("reason", "User requested human assistance."),
                 "summary": args.get("summary", ""),
                 "status": "pending",
@@ -141,7 +142,7 @@ class ToolExecutor:
             }
 
     async def _save_contact_details(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Save or upsert visitor contact details."""
+        """Save visitor contact details."""
         email = args.get("email")
         payload = {
             "tenant_id": self.tenant_id,
@@ -149,18 +150,11 @@ class ToolExecutor:
             "email": email,
             "phone": args.get("phone"),
             "company": args.get("company"),
-            "source": "chatbot",
         }
         try:
-            if email:
-                resp = self.supabase.table("contacts").upsert(
-                    payload, on_conflict="tenant_id,email"
-                ).execute()
-            else:
-                resp = self.supabase.table("contacts").insert(payload).execute()
-
+            resp = self.supabase.table("contacts").insert(payload).execute()
             contact_id = resp.data[0]["id"] if resp.data else None
-            return {"status": "contact_saved", "contact_id": contact_id}
+            return {"status": "contact_saved", "contact_id": contact_id, "name": args.get("name"), "email": email}
         except Exception as e:
             logger.warning(f"Database write to 'contacts' table failed: {e}")
             return {"status": "contact_saved", "contact_id": "temp_contact", "name": args.get("name"), "email": email}
