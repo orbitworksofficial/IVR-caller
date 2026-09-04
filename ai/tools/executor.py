@@ -112,7 +112,7 @@ class ToolExecutor:
 
         # Fallback default booking link if table fetch is restricted or unpopulated
         return {
-            "booking_url": "https://calendly.com/orbitworks/discovery",
+            "booking_url": "https://calendly.com/orbitworksofficial01/30min",
             "message": "You can book a 15-minute discovery call directly using our Calendly link."
         }
 
