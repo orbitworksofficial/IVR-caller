@@ -125,22 +125,43 @@ class GroundingGuardrails:
 
         return False
 
+    def is_booking_request(self, user_query: str) -> bool:
+        """
+        Returns True if the user is asking to book a call, schedule a discovery session, or get a booking link.
+        Booking requests must NEVER trigger hard RAG abstentions.
+        """
+        cleaned = user_query.strip().lower()
+        return bool(re.search(r"\b(book|schedule|appointment|calendar|discovery call|15-minute|book a call|meeting link|consultation)\b", cleaned, re.IGNORECASE))
+
+    def is_handoff_request(self, user_query: str) -> bool:
+        """
+        Returns True if the user is asking to speak with a human, sales representative, or real person.
+        Handoff requests must NEVER trigger hard RAG abstentions.
+        """
+        cleaned = user_query.strip().lower()
+        return bool(re.search(r"\b(human|person|sales rep|representative|agent|speak to|talk to|real person|support team|connect me)\b", cleaned, re.IGNORECASE))
+
     # ── Grounding ─────────────────────────────────────────────────────────────
 
     def should_abstain(self, retrieval_results: List[Dict[str, Any]], user_query: str = "") -> bool:
         """
         Returns True if the bot should abstain from answering.
         Abstain when: no chunks retrieved, OR top score is below the abstain threshold.
-        Chitchat/greetings and contact detail submissions automatically bypass abstention.
+        Chitchat, contact submissions, booking requests, and handoff requests automatically bypass abstention.
         """
-        if user_query and (self.is_chitchat(user_query) or self.is_contact_info(user_query)):
-            return False
+        if user_query:
+            if (self.is_chitchat(user_query) or 
+                self.is_contact_info(user_query) or 
+                self.is_booking_request(user_query) or 
+                self.is_handoff_request(user_query)):
+                return False
 
         if not retrieval_results:
             return True
         top_score = retrieval_results[0].get("score")
         if top_score is None:
-            top_score = 0.0
+            # Retrieved chunks present without explicit score (e.g. FTS keyword fallback) -> do not abstain
+            return False
         return top_score < self.abstain_threshold
 
     def meets_grounding_threshold(self, retrieval_results: List[Dict[str, Any]]) -> bool:
@@ -152,7 +173,7 @@ class GroundingGuardrails:
             return False
         top_score = retrieval_results[0].get("score")
         if top_score is None:
-            top_score = 0.0
+            return True
         return top_score >= self.confidence_threshold
 
     def score_distribution(self, retrieval_results: List[Dict[str, Any]]) -> Dict[str, float]:

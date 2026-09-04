@@ -227,7 +227,13 @@ class ChatPipeline:
             bot_id=self.bot_id,
         )
         tool_messages = list(messages)
-        tool_messages.append(result["message"])
+        assistant_msg = result["message"]
+        if hasattr(assistant_msg, "model_dump"):
+            tool_messages.append(assistant_msg.model_dump())
+        elif isinstance(assistant_msg, dict):
+            tool_messages.append(assistant_msg)
+        else:
+            tool_messages.append({"role": "assistant", "content": getattr(assistant_msg, "content", "") or ""})
 
         for tc in tool_calls:
             try:
