@@ -229,8 +229,13 @@ class ChatPipeline:
         tool_messages = list(messages)
         assistant_msg = result["message"]
         if hasattr(assistant_msg, "model_dump"):
-            tool_messages.append(assistant_msg.model_dump())
+            dumped = assistant_msg.model_dump()
+            if dumped.get("content") is None:
+                dumped["content"] = ""
+            tool_messages.append(dumped)
         elif isinstance(assistant_msg, dict):
+            if assistant_msg.get("content") is None:
+                assistant_msg["content"] = ""
             tool_messages.append(assistant_msg)
         else:
             tool_messages.append({"role": "assistant", "content": getattr(assistant_msg, "content", "") or ""})
