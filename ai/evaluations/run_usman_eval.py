@@ -53,17 +53,24 @@ class TestResult:
 
 
 def parse_usman_pdf(file_path: str) -> List[TestCase]:
-    """Parses queries from the raw text extracted from Usman's PDF."""
+    """Parses queries from Usman's PDF or extracted raw text file."""
     if not os.path.exists(file_path):
-        # Fall back to 300_raw.txt if it exists
-        raw_path = "300_raw.txt"
-        if not os.path.exists(raw_path):
+        if os.path.exists("330_raw.txt"):
+            file_path = "330_raw.txt"
+        elif os.path.exists("300_raw.txt"):
+            file_path = "300_raw.txt"
+        else:
             print(f"❌ File not found: {file_path}")
             return []
-        file_path = raw_path
 
-    with open(file_path, "r", encoding="utf-8") as f:
-        lines = f.readlines()
+    if file_path.endswith(".pdf"):
+        import pdfplumber
+        with pdfplumber.open(file_path) as pdf:
+            raw_text = "\n".join(p.extract_text() or "" for p in pdf.pages)
+        lines = raw_text.split("\n")
+    else:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
 
     cases = []
     current_category = "General"
