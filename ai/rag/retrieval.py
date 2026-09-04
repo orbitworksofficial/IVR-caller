@@ -15,7 +15,7 @@ class SecurityEnforcedRetrieval:
     - retrieve_with_fallback() — retries FTS-only if vector search returns nothing
     """
 
-    def __init__(self, supabase_client: Client, default_threshold: float = 0.5):
+    def __init__(self, supabase_client: Client, default_threshold: float = 0.10):
         self.supabase = supabase_client
         self.default_threshold = default_threshold
 

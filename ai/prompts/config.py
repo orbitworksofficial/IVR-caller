@@ -49,7 +49,11 @@ class TenantConfigResolver:
         response = self.supabase.table("bots").select("*").eq("id", bot_id).execute()
 
         if not response.data:
-            raise ValueError(f"Bot config not found for ID '{bot_id}'.")
+            logger.warning(f"Bot config not found or restricted for ID '{bot_id}'. Using DEFAULT_CONFIG fallback.")
+            config = dict(DEFAULT_CONFIG)
+            config["id"] = bot_id
+            self._cache[bot_id] = config
+            return config
 
         raw = response.data[0]
 

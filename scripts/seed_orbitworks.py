@@ -102,12 +102,14 @@ async def main() -> int:
             "booking_url": BOOKING_URL,
             "support_mode_enabled": True,
             "sales_mode_enabled": True,
-            "tone": "friendly",
-            "escalation_email": "sales@orb-itworks.com",
-            "escalation_phone": "+1 443 260 9169",
-            "business_hours": "Monday to Friday, 9AM to 6PM EST",
-            "launcher_label": "Chat with us",
             "status": "active",
+            "handoff_settings": {
+                "tone": "friendly",
+                "escalation_email": "sales@orb-itworks.com",
+                "escalation_phone": "+1 443 260 9169",
+                "business_hours": "Monday to Friday, 9AM to 6PM EST",
+                "launcher_label": "Chat with us"
+            }
         }).execute()
         bot_id = resp.data[0]["id"]
         print(f"[2/5] Bot created         {bot_id}")
@@ -116,10 +118,8 @@ async def main() -> int:
     src = supabase.table("knowledge_sources").insert({
         "tenant_id": tenant_id,
         "bot_id": bot_id,
-        "name": "OrbitWorks FAQ",
         "source_name": "OrbitWorks FAQ",
         "source_type": "faq",
-        "status": "active",
     }).execute()
     source_id = src.data[0]["id"]
 
@@ -127,9 +127,7 @@ async def main() -> int:
         "tenant_id": tenant_id,
         "source_id": source_id,
         "title": args.title,
-        "file_path": args.knowledge,
-        "status": "processing",
-        "metadata": {"seeded_by": "scripts/seed_orbitworks.py"},
+        "metadata": {"seeded_by": "scripts/seed_orbitworks.py", "file_path": args.knowledge},
     }).execute()
     document_id = doc.data[0]["id"]
     print(f"[3/5] Document created    {document_id}")
@@ -154,10 +152,6 @@ async def main() -> int:
         title=args.title,
         category=args.category,
     )
-
-    supabase.table("knowledge_documents").update(
-        {"status": "processed"}
-    ).eq("id", document_id).execute()
 
     print()
     print("=" * 62)

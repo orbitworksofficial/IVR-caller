@@ -34,12 +34,30 @@ INJECTION_PATTERNS = [
     r"(select|drop|insert|update|delete)\s+\*?\s+from\b",
 ]
 
+# ── Casual chitchat / greetings patterns ────────────────────────────────────
+# Queries matching these should NEVER trigger hard RAG abstention
+CHITCHAT_PATTERNS = [
+    # Greetings
+    r"^(hi|hello|hey|heyya|hiya|howdy|greetings|hola|sup|yo)\b",
+    r"^(good\s+(morning|afternoon|evening|day|night))\b",
+    # Identity & capabilities
+    r"^(who\s+are\s+you|what\s+is\s+your\s+name|who\s+made\s+you|what\s+are\s+you)\b",
+    r"^(what\s+can\s+you\s+do|how\s+can\s+you\s+help|what\s+do\s+you\s+do|can\s+you\s+help\s+me)\b",
+    r"^(tell\s+me\s+about\s+yourself|introduce\s+yourself)\b",
+    # Courtesy & check-in
+    r"^(how\s+are\s+you|how\s+is\s+it\s+going|how\s+are\s+things|how\s+do\s+you\s+do)\b",
+    r"^(thank\s+you|thanks|thanks\s+a\s+lot|thank\s+you\s+so\s+much)\b",
+    r"^(bye|goodbye|see\s+you|talk\s+to\s+you\s+later)\b",
+    r"^(ok|okay|sure|cool|great|awesome|got\s+it|nice)\b",
+]
+
 
 class GroundingGuardrails:
     """
     Phase 3 hardened guardrails:
     - Expanded prompt injection defense (30+ patterns)
     - Improved abstention logic based on score distribution
+    - Chitchat & greeting bypass for natural conversational responses
     - Numeric fact grounding that handles reformatted values
     - Tool argument validation before dispatch
     """
@@ -73,20 +91,77 @@ class GroundingGuardrails:
                 return pattern
         return None
 
+    def is_chitchat(self, user_query: str) -> bool:
+        """
+        Returns True if the query is a casual greeting, identity question, or courtesy phrase.
+        Chitchat/greetings should NEVER trigger RAG abstention.
+        """
+        cleaned = user_query.strip().lower()
+
+        # Exact single-word or short phrases
+        if cleaned in {"hi", "hello", "hey", "hiya", "howdy", "yo", "sup", "thanks", "thank you", "ok", "okay", "bye", "goodbye", "who are you"}:
+            return True
+
+        for pattern in CHITCHAT_PATTERNS:
+            if re.search(pattern, cleaned, re.IGNORECASE):
+                return True
+
+        return False
+
+    def is_contact_info(self, user_query: str) -> bool:
+        """
+        Returns True if the user query contains email addresses, phone numbers, or lead capture phrases.
+        Contact detail submissions must NEVER trigger hard RAG abstentions.
+        """
+        cleaned = user_query.strip().lower()
+
+        # Email regex pattern
+        if re.search(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", user_query):
+            return True
+
+        # Name / Contact phrases
+        if re.search(r"\b(my name is|my email is|call me|reach me at|my phone|contact me)\b", cleaned, re.IGNORECASE):
+            return True
+
+        return False
+
+    def is_booking_request(self, user_query: str) -> bool:
+        """
+        Returns True if the user is asking to book a call, schedule a discovery session, or get a booking link.
+        Booking requests must NEVER trigger hard RAG abstentions.
+        """
+        cleaned = user_query.strip().lower()
+        return bool(re.search(r"\b(book|schedule|appointment|calendar|discovery call|15-minute|book a call|meeting link|consultation)\b", cleaned, re.IGNORECASE))
+
+    def is_handoff_request(self, user_query: str) -> bool:
+        """
+        Returns True if the user is asking to speak with a human, sales representative, or real person.
+        Handoff requests must NEVER trigger hard RAG abstentions.
+        """
+        cleaned = user_query.strip().lower()
+        return bool(re.search(r"\b(human|person|sales rep|representative|agent|speak to|talk to|real person|support team|connect me)\b", cleaned, re.IGNORECASE))
+
     # ── Grounding ─────────────────────────────────────────────────────────────
 
-    def should_abstain(self, retrieval_results: List[Dict[str, Any]]) -> bool:
+    def should_abstain(self, retrieval_results: List[Dict[str, Any]], user_query: str = "") -> bool:
         """
         Returns True if the bot should abstain from answering.
         Abstain when: no chunks retrieved, OR top score is below the abstain threshold.
-        This is distinct from meets_grounding_threshold — abstain is a hard "don't answer",
-        grounding threshold is a softer "confidence signal".
+        Chitchat, contact submissions, booking requests, and handoff requests automatically bypass abstention.
         """
+        if user_query:
+            if (self.is_chitchat(user_query) or 
+                self.is_contact_info(user_query) or 
+                self.is_booking_request(user_query) or 
+                self.is_handoff_request(user_query)):
+                return False
+
         if not retrieval_results:
             return True
         top_score = retrieval_results[0].get("score")
         if top_score is None:
-            top_score = 0.0
+            # Retrieved chunks present without explicit score (e.g. FTS keyword fallback) -> do not abstain
+            return False
         return top_score < self.abstain_threshold
 
     def meets_grounding_threshold(self, retrieval_results: List[Dict[str, Any]]) -> bool:
@@ -98,7 +173,7 @@ class GroundingGuardrails:
             return False
         top_score = retrieval_results[0].get("score")
         if top_score is None:
-            top_score = 0.0
+            return True
         return top_score >= self.confidence_threshold
 
     def score_distribution(self, retrieval_results: List[Dict[str, Any]]) -> Dict[str, float]:
@@ -129,7 +204,7 @@ class GroundingGuardrails:
         - Only flags numbers that look like facts (prices, percentages, years)
         - Skips very small numbers (1, 2, etc.) which are likely list items
         """
-        if not source_contents:
+        if not response_text or not source_contents:
             return True
 
         sources_combined = " ".join(source_contents)

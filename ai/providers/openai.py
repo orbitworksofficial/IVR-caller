@@ -145,7 +145,7 @@ class OpenAIProvider(LLMProvider):
         response = await self.client.chat.completions.create(**api_params)
 
         return {
-            "text": response.choices[0].message.content,
+            "text": response.choices[0].message.content or "",
             "usage": {
                 "prompt_tokens": response.usage.prompt_tokens,
                 "completion_tokens": response.usage.completion_tokens,
