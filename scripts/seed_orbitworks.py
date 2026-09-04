@@ -36,7 +36,7 @@ PERSONALITY = (
     "digital marketing, IT and cloud solutions, custom software, and staff "
     "augmentation to startups, small and mid-sized businesses, and enterprises."
 )
-BOOKING_URL = "https://calendly.com/orbitworks/discovery"
+BOOKING_URL = "https://calendly.com/orbitworksofficial01/30min"
 
 
 def read_content(path: str) -> str:
