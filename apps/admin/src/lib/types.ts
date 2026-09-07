@@ -2,7 +2,44 @@ export interface Admin {
   user_id: string;
   email: string | null;
   tenant_id: string;
-  role: string;
+  own_tenant_id: string;
+  role: "admin" | "client";
+  is_super_admin: boolean;
+  is_impersonating: boolean;
+}
+
+export interface TenantSummary {
+  id: string;
+  name: string;
+  contact_email?: string | null;
+  industry?: string | null;
+  website?: string | null;
+  created_at?: string;
+  bot_count: number;
+  chunk_count: number;
+  conversation_count: number;
+  lead_count: number;
+  pending_handoffs: number;
+  admin_count: number;
+}
+
+export interface AdminAccount {
+  id: string;
+  user_id: string;
+  tenant_id: string;
+  tenant_name?: string | null;
+  email?: string | null;
+  role: "admin" | "client";
+  is_super_admin: boolean;
+  created_at?: string;
+}
+
+export interface CreateTenantResult {
+  tenant_id: string;
+  bot_id: string;
+  user_id: string;
+  admin_email: string;
+  embed_snippet: string;
 }
 
 export interface Bot {

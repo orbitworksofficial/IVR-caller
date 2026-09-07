@@ -7,8 +7,10 @@ import { createClient } from "@/lib/supabase";
 import { api } from "@/lib/api";
 import {
   IconHome, IconBot, IconBook, IconChat, IconUsers,
-  IconHandoff, IconCode, IconMenu,
+  IconHandoff, IconCode, IconMenu, IconGlobe,
 } from "./Icons";
+import { TenantSwitcher } from "./TenantSwitcher";
+import type { Admin } from "@/lib/types";
 
 const NAV = [
   { href: "/",              label: "Overview",      icon: IconHome },
@@ -18,6 +20,11 @@ const NAV = [
   { href: "/leads",         label: "Leads",         icon: IconUsers },
   { href: "/handoffs",      label: "Handoffs",      icon: IconHandoff },
   { href: "/embed",         label: "Embed code",    icon: IconCode },
+];
+
+// Only rendered for super-admins.
+const SUPER_NAV = [
+  { href: "/tenants", label: "All tenants", icon: IconGlobe },
 ];
 
 export function Shell({
@@ -31,6 +38,7 @@ export function Shell({
   const pathname = usePathname();
   const router = useRouter();
   const [email, setEmail] = useState<string>("");
+  const [admin, setAdmin] = useState<Admin | null>(null);
   const [pendingHandoffs, setPendingHandoffs] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
 
@@ -39,6 +47,8 @@ export function Shell({
     supabase.auth.getUser().then(({ data }) => {
       setEmail(data.user?.email ?? "");
     });
+
+    api.me().then(setAdmin).catch(() => {});
 
     // The handoff badge is a nice-to-have; a failure here must not break the
     // page the admin actually asked for.
@@ -74,6 +84,24 @@ export function Shell({
         </div>
 
         <nav className="sidebar-nav">
+          {admin?.is_super_admin && (
+            <>
+              {SUPER_NAV.map(({ href, label, icon: Icon }) => {
+                const active = pathname.startsWith(href);
+                return (
+                  <Link key={href} href={href}
+                        className={`nav-item${active ? " active" : ""}`}>
+                    <Icon />
+                    <span>{label}</span>
+                  </Link>
+                );
+              })}
+              <div style={{
+                height: 1, background: "rgba(255,255,255,0.12)",
+                margin: "10px 12px",
+              }} />
+            </>
+          )}
           {NAV.map(({ href, label, icon: Icon }) => {
             const active =
               href === "/" ? pathname === "/" : pathname.startsWith(href);
@@ -91,6 +119,13 @@ export function Shell({
 
         <div className="sidebar-footer">
           <div className="sidebar-user">{email || "…"}</div>
+          {admin && (
+            <div style={{ fontSize: 11, opacity: 0.55, marginBottom: 8 }}>
+              {admin.is_super_admin
+                ? "Super admin"
+                : admin.role === "admin" ? "Administrator" : "Client account"}
+            </div>
+          )}
           <button className="sign-out" onClick={signOut}>Sign out</button>
         </div>
       </aside>
@@ -110,7 +145,10 @@ export function Shell({
               {subtitle && <p className="page-subtitle">{subtitle}</p>}
             </div>
           </div>
-          {actions && <div style={{ display: "flex", gap: 8 }}>{actions}</div>}
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <TenantSwitcher admin={admin} />
+            {actions}
+          </div>
         </div>
 
         <div className="page">{children}</div>

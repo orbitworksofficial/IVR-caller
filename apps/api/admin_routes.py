@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from supabase import Client
 
 from apps.api.admin_auth import get_current_admin, verify_bot_ownership
+from apps.api.permissions import require
 from apps.api.dependencies import get_supabase_admin_client, get_ai_provider
 from apps.api.security import invalidate_bot_cache, _normalize_host
 from apps.api.schemas import (
@@ -85,7 +86,7 @@ async def get_bot(
 @router.post("/bots", status_code=201)
 async def create_bot(
     payload: BotCreateRequest,
-    admin: Dict[str, Any] = Depends(get_current_admin),
+    admin: Dict[str, Any] = Depends(require("manage_bots")),
     supabase: Client = Depends(get_supabase_admin_client),
 ):
     record = payload.model_dump(exclude_none=True)
@@ -107,7 +108,7 @@ async def create_bot(
 async def update_bot(
     bot_id: str,
     payload: BotUpdateRequest,
-    admin: Dict[str, Any] = Depends(get_current_admin),
+    admin: Dict[str, Any] = Depends(require("manage_bots")),
     supabase: Client = Depends(get_supabase_admin_client),
 ):
     await verify_bot_ownership(bot_id, _tenant(admin), supabase)
@@ -132,7 +133,7 @@ async def update_bot(
 @router.delete("/bots/{bot_id}", status_code=204)
 async def delete_bot(
     bot_id: str,
-    admin: Dict[str, Any] = Depends(get_current_admin),
+    admin: Dict[str, Any] = Depends(require("manage_bots")),
     supabase: Client = Depends(get_supabase_admin_client),
 ):
     """Archives a bot. Conversation history is preserved for auditability (§08)."""
@@ -166,7 +167,7 @@ async def list_domains(
 async def add_domain(
     bot_id: str,
     payload: DomainCreateRequest,
-    admin: Dict[str, Any] = Depends(get_current_admin),
+    admin: Dict[str, Any] = Depends(require("manage_domains")),
     supabase: Client = Depends(get_supabase_admin_client),
 ):
     """
@@ -204,7 +205,7 @@ async def add_domain(
 async def remove_domain(
     bot_id: str,
     domain_id: str,
-    admin: Dict[str, Any] = Depends(get_current_admin),
+    admin: Dict[str, Any] = Depends(require("manage_domains")),
     supabase: Client = Depends(get_supabase_admin_client),
 ):
     await verify_bot_ownership(bot_id, _tenant(admin), supabase)

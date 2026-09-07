@@ -10,7 +10,7 @@ import {
 import { IconBack, IconTrash, IconPlus, IconGlobe } from "@/components/Icons";
 import { EmbedSnippet } from "@/components/EmbedSnippet";
 import { api, ApiError } from "@/lib/api";
-import type { Bot, BotDomain } from "@/lib/types";
+import type { Bot, BotDomain, Admin } from "@/lib/types";
 
 type Tab = "behavior" | "branding" | "domains" | "embed";
 
@@ -23,6 +23,7 @@ export default function BotDetailPage({
   const router = useRouter();
 
   const [bot, setBot] = useState<Bot | null>(null);
+  const [me, setMe] = useState<Admin | null>(null);
   const [domains, setDomains] = useState<BotDomain[]>([]);
   const [tab, setTab] = useState<Tab>("behavior");
   const [loading, setLoading] = useState(true);
@@ -34,11 +35,12 @@ export default function BotDetailPage({
   const [form, setForm] = useState<Partial<Bot>>({});
 
   useEffect(() => {
-    Promise.all([api.getBot(botId), api.listDomains(botId)])
-      .then(([botData, domainData]) => {
+    Promise.all([api.getBot(botId), api.listDomains(botId), api.me()])
+      .then(([botData, domainData, admin]) => {
         setBot(botData);
         setForm(botData);
         setDomains(domainData);
+        setMe(admin);
       })
       .catch((e: ApiError) => setError(e.message))
       .finally(() => setLoading(false));
@@ -98,6 +100,9 @@ export default function BotDetailPage({
     }
   }
 
+  // Clients may read the config but not modify it; the API enforces this too.
+  const canEdit = me?.role === "admin" || !!me?.is_super_admin;
+
   if (loading) {
     return <Shell title="Bot"><LoadingState label="Loading configuration…" /></Shell>;
   }
@@ -118,14 +123,22 @@ export default function BotDetailPage({
       actions={
         <>
           <Link href="/bots" className="btn btn-ghost"><IconBack /> Back</Link>
-          <button className="btn btn-primary" onClick={save} disabled={saving}>
-            {saving ? <><Spinner /> Saving…</> : "Save changes"}
-          </button>
+          {canEdit && (
+            <button className="btn btn-primary" onClick={save} disabled={saving}>
+              {saving ? <><Spinner /> Saving…</> : "Save changes"}
+            </button>
+          )}
         </>
       }
     >
       {error && <Alert kind="error">{error}</Alert>}
       {saved && <Alert kind="success">Changes saved. The widget picks them up within a minute.</Alert>}
+      {!canEdit && (
+        <Alert kind="info">
+          You can view this configuration but not change it. Contact your account
+          manager to update bot settings, branding or domains.
+        </Alert>
+      )}
 
       <div className="tabs">
         {([
@@ -145,11 +158,11 @@ export default function BotDetailPage({
       </div>
 
       {tab === "behavior" && (
-        <BehaviorTab form={form} update={update} onArchive={archive} />
+        <BehaviorTab form={form} update={update} onArchive={archive} canEdit={canEdit} />
       )}
-      {tab === "branding" && <BrandingTab form={form} update={update} />}
+      {tab === "branding" && <BrandingTab form={form} update={update} canEdit={canEdit} />}
       {tab === "domains" && (
-        <DomainsTab botId={botId} domains={domains} setDomains={setDomains} />
+        <DomainsTab botId={botId} domains={domains} setDomains={setDomains} canEdit={canEdit} />
       )}
       {tab === "embed" && <EmbedSnippet botId={botId} botName={bot.name} />}
     </Shell>
@@ -159,11 +172,12 @@ export default function BotDetailPage({
 // ── Behavior ─────────────────────────────────────────────────────────────────
 
 function BehaviorTab({
-  form, update, onArchive,
+  form, update, onArchive, canEdit,
 }: {
   form: Partial<Bot>;
   update: <K extends keyof Bot>(key: K, value: Bot[K]) => void;
   onArchive: () => void;
+  canEdit: boolean;
 }) {
   return (
     <div className="grid grid-2">
@@ -177,20 +191,20 @@ function BehaviorTab({
         <div className="card-body">
           <div className="field">
             <label className="label">Business name</label>
-            <input className="input" value={form.name ?? ""}
+            <input className="input" disabled={!canEdit} value={form.name ?? ""}
                    onChange={(e) => update("name", e.target.value)} />
           </div>
 
           <div className="field">
             <label className="label">Welcome message</label>
-            <input className="input" value={form.welcome_message ?? ""}
+            <input className="input" disabled={!canEdit} value={form.welcome_message ?? ""}
                    onChange={(e) => update("welcome_message", e.target.value)}
                    placeholder="Hi! How can I help you today?" />
           </div>
 
           <div className="field">
             <label className="label">Business context</label>
-            <textarea className="textarea" value={form.system_personality ?? ""}
+            <textarea className="textarea" disabled={!canEdit} value={form.system_personality ?? ""}
                       onChange={(e) => update("system_personality", e.target.value)}
                       placeholder="You are the assistant for…" />
             <p className="hint">
@@ -201,7 +215,7 @@ function BehaviorTab({
 
           <div className="field">
             <label className="label">Status</label>
-            <select className="select" value={form.status ?? "active"}
+            <select className="select" disabled={!canEdit} value={form.status ?? "active"}
                     onChange={(e) => update("status", e.target.value)}>
               <option value="active">Active — responding</option>
               <option value="paused">Paused — not responding</option>
@@ -219,7 +233,7 @@ function BehaviorTab({
         </div>
         <div className="card-body">
           <label className="checkbox-row">
-            <input type="checkbox" checked={form.support_mode_enabled ?? true}
+            <input type="checkbox" disabled={!canEdit} checked={form.support_mode_enabled ?? true}
                    onChange={(e) => update("support_mode_enabled", e.target.checked)} />
             <div>
               <div className="checkbox-label">Customer support</div>
@@ -231,7 +245,7 @@ function BehaviorTab({
           </label>
 
           <label className="checkbox-row">
-            <input type="checkbox" checked={form.sales_mode_enabled ?? true}
+            <input type="checkbox" disabled={!canEdit} checked={form.sales_mode_enabled ?? true}
                    onChange={(e) => update("sales_mode_enabled", e.target.checked)} />
             <div>
               <div className="checkbox-label">Consultative sales</div>
@@ -244,7 +258,7 @@ function BehaviorTab({
 
           <div className="field" style={{ marginTop: 16 }}>
             <label className="label">Tone</label>
-            <select className="select" value={form.tone ?? "professional"}
+            <select className="select" disabled={!canEdit} value={form.tone ?? "professional"}
                     onChange={(e) => update("tone", e.target.value)}>
               <option value="professional">Professional</option>
               <option value="friendly">Friendly</option>
@@ -254,7 +268,7 @@ function BehaviorTab({
 
           <div className="field">
             <label className="label">Response length</label>
-            <select className="select" value={form.max_response_length ?? "medium"}
+            <select className="select" disabled={!canEdit} value={form.max_response_length ?? "medium"}
                     onChange={(e) => update("max_response_length", e.target.value)}>
               <option value="short">Short — up to 3 paragraphs</option>
               <option value="medium">Medium</option>
@@ -264,7 +278,7 @@ function BehaviorTab({
 
           <div className="field">
             <label className="label">Response language</label>
-            <input className="input" value={form.response_language ?? "english"}
+            <input className="input" disabled={!canEdit} value={form.response_language ?? "english"}
                    onChange={(e) => update("response_language", e.target.value)} />
           </div>
         </div>
@@ -280,7 +294,7 @@ function BehaviorTab({
         <div className="card-body">
           <div className="field">
             <label className="label">Booking URL</label>
-            <input className="input" value={form.booking_url ?? ""}
+            <input className="input" disabled={!canEdit} value={form.booking_url ?? ""}
                    onChange={(e) => update("booking_url", e.target.value)}
                    placeholder="https://calendly.com/your-team/discovery" />
             <p className="hint">Shared when a visitor is ready to talk to someone.</p>
@@ -295,14 +309,14 @@ function BehaviorTab({
 
           <div className="field">
             <label className="label">Escalation phone</label>
-            <input className="input" value={form.escalation_phone ?? ""}
+            <input className="input" disabled={!canEdit} value={form.escalation_phone ?? ""}
                    onChange={(e) => update("escalation_phone", e.target.value)}
                    placeholder="+1 555 000 1234" />
           </div>
 
           <div className="field">
             <label className="label">Business hours</label>
-            <input className="input" value={form.business_hours ?? ""}
+            <input className="input" disabled={!canEdit} value={form.business_hours ?? ""}
                    onChange={(e) => update("business_hours", e.target.value)}
                    placeholder="Mon–Fri, 9AM–6PM EST" />
           </div>
@@ -332,10 +346,11 @@ function BehaviorTab({
 // ── Branding ─────────────────────────────────────────────────────────────────
 
 function BrandingTab({
-  form, update,
+  form, update, canEdit,
 }: {
   form: Partial<Bot>;
   update: <K extends keyof Bot>(key: K, value: Bot[K]) => void;
+  canEdit: boolean;
 }) {
   const primary = form.primary_color || "#E6007E";
   const secondary = form.secondary_color || "#1A1B3A";
@@ -353,9 +368,9 @@ function BrandingTab({
           <div className="field">
             <label className="label">Primary color</label>
             <div className="color-row">
-              <input type="color" value={primary}
+              <input type="color" disabled={!canEdit} value={primary}
                      onChange={(e) => update("primary_color", e.target.value)} />
-              <input className="input" value={primary}
+              <input className="input" disabled={!canEdit} value={primary}
                      onChange={(e) => update("primary_color", e.target.value)} />
             </div>
             <p className="hint">Launcher button, user message bubbles, send button.</p>
@@ -364,16 +379,16 @@ function BrandingTab({
           <div className="field">
             <label className="label">Header color</label>
             <div className="color-row">
-              <input type="color" value={secondary}
+              <input type="color" disabled={!canEdit} value={secondary}
                      onChange={(e) => update("secondary_color", e.target.value)} />
-              <input className="input" value={secondary}
+              <input className="input" disabled={!canEdit} value={secondary}
                      onChange={(e) => update("secondary_color", e.target.value)} />
             </div>
           </div>
 
           <div className="field">
             <label className="label">Logo URL</label>
-            <input className="input" value={form.logo_url ?? ""}
+            <input className="input" disabled={!canEdit} value={form.logo_url ?? ""}
                    onChange={(e) => update("logo_url", e.target.value)}
                    placeholder="https://yoursite.com/logo.png" />
             <p className="hint">Square image works best. Falls back to an initial.</p>
@@ -381,7 +396,7 @@ function BrandingTab({
 
           <div className="field">
             <label className="label">Placement</label>
-            <select className="select" value={form.placement ?? "bottom-right"}
+            <select className="select" disabled={!canEdit} value={form.placement ?? "bottom-right"}
                     onChange={(e) => update("placement", e.target.value)}>
               <option value="bottom-right">Bottom right</option>
               <option value="bottom-left">Bottom left</option>
@@ -390,7 +405,7 @@ function BrandingTab({
 
           <div className="field">
             <label className="label">Launcher label</label>
-            <input className="input" value={form.launcher_label ?? ""}
+            <input className="input" disabled={!canEdit} value={form.launcher_label ?? ""}
                    onChange={(e) => update("launcher_label", e.target.value)}
                    placeholder="Chat with us" />
             <p className="hint">Leave empty for an icon-only round button.</p>
@@ -495,11 +510,12 @@ function BrandingTab({
 // ── Domains ──────────────────────────────────────────────────────────────────
 
 function DomainsTab({
-  botId, domains, setDomains,
+  botId, domains, setDomains, canEdit,
 }: {
   botId: string;
   domains: BotDomain[];
   setDomains: (domains: BotDomain[]) => void;
+  canEdit: boolean;
 }) {
   const [value, setValue] = useState("");
   const [busy, setBusy] = useState(false);

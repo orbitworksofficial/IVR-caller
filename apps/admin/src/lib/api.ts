@@ -2,7 +2,32 @@ import { createClient } from "./supabase";
 import type {
   Admin, Bot, BotDomain, KnowledgeDocument, Conversation,
   ConversationDetail, Lead, Handoff, DashboardStats,
+  TenantSummary, AdminAccount, CreateTenantResult,
 } from "./types";
+
+const TENANT_KEY = "orbitworks_active_tenant";
+
+/**
+ * The tenant a super-admin has switched into, sent as X-Tenant-Id.
+ * Ignored by the API for non-super-admins, so a normal client cannot use it
+ * to reach another tenant.
+ */
+export function getActiveTenant(): string | null {
+  try {
+    return window.localStorage.getItem(TENANT_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setActiveTenant(tenantId: string | null): void {
+  try {
+    if (tenantId) window.localStorage.setItem(TENANT_KEY, tenantId);
+    else window.localStorage.removeItem(TENANT_KEY);
+  } catch {
+    /* storage blocked - the switcher just will not persist */
+  }
+}
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -30,6 +55,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   const headers = new Headers(init.headers);
   headers.set("Authorization", `Bearer ${token}`);
+
+  const activeTenant = getActiveTenant();
+  if (activeTenant) headers.set("X-Tenant-Id", activeTenant);
   // FormData sets its own multipart boundary — never override it.
   if (!(init.body instanceof FormData) && init.body) {
     headers.set("Content-Type", "application/json");
@@ -118,6 +146,26 @@ export const api = {
     request<Conversation[]>(`/admin/conversations?limit=${limit}`),
   getConversation: (id: string) =>
     request<ConversationDetail>(`/admin/conversations/${id}`),
+
+  // Super admin
+  listTenants: () => request<TenantSummary[]>("/superadmin/tenants"),
+  createTenant: (payload: {
+    business_name: string; admin_email: string; admin_password: string;
+    contact_email?: string; contact_phone?: string; website?: string;
+    industry?: string; notes?: string; role?: string;
+  }) =>
+    request<CreateTenantResult>("/superadmin/tenants", {
+      method: "POST", body: JSON.stringify(payload),
+    }),
+  deleteTenant: (id: string) =>
+    request<void>(`/superadmin/tenants/${id}`, { method: "DELETE" }),
+  listAdmins: () => request<AdminAccount[]>("/superadmin/admins"),
+  updateAdmin: (id: string, payload: { role?: string; is_super_admin?: boolean }) =>
+    request<AdminAccount>(`/superadmin/admins/${id}`, {
+      method: "PATCH", body: JSON.stringify(payload),
+    }),
+  deleteAdmin: (id: string) =>
+    request<void>(`/superadmin/admins/${id}`, { method: "DELETE" }),
 
   // Leads & handoffs
   listLeads: () => request<Lead[]>("/admin/leads"),

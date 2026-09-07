@@ -9,10 +9,11 @@ import {
 } from "@/components/ui";
 import { IconBot, IconPlus } from "@/components/Icons";
 import { api, ApiError } from "@/lib/api";
-import type { Bot } from "@/lib/types";
+import type { Bot, Admin } from "@/lib/types";
 
 export default function BotsPage() {
   const [bots, setBots] = useState<Bot[]>([]);
+  const [me, setMe] = useState<Admin | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -31,7 +32,13 @@ export default function BotsPage() {
       .finally(() => setLoading(false));
   }
 
-  useEffect(load, []);
+  useEffect(() => {
+    load();
+    api.me().then(setMe).catch(() => {});
+  }, []);
+
+  // Only admins and super-admins may create bots; the API enforces it too.
+  const canManage = me?.role === "admin" || !!me?.is_super_admin;
 
   async function handleCreate(event: React.FormEvent) {
     event.preventDefault();
@@ -59,9 +66,11 @@ export default function BotsPage() {
       title="Bots"
       subtitle="Each bot is one deployable assistant with its own branding and behavior."
       actions={
-        <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
-          <IconPlus /> New bot
-        </button>
+        canManage ? (
+          <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
+            <IconPlus /> New bot
+          </button>
+        ) : undefined
       }
     >
       {error && <Alert kind="error">{error}</Alert>}
@@ -75,9 +84,11 @@ export default function BotsPage() {
             title="No bots yet"
             text="Create your first bot, add its knowledge base, then embed it on your site with a single script tag."
             action={
-              <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
-                <IconPlus /> Create your first bot
-              </button>
+              canManage ? (
+                <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
+                  <IconPlus /> Create your first bot
+                </button>
+              ) : undefined
             }
           />
         </div>
@@ -114,7 +125,7 @@ export default function BotsPage() {
                     <td className="cell-muted">{formatDate(bot.created_at)}</td>
                     <td style={{ textAlign: "right" }}>
                       <Link href={`/bots/${bot.id}`} className="btn btn-secondary btn-sm">
-                        Configure
+                        {canManage ? "Configure" : "View"}
                       </Link>
                     </td>
                   </tr>
