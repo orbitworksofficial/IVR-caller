@@ -204,21 +204,34 @@ class OpenAIProvider(LLMProvider):
 
     async def embed(self, text: str, **kwargs) -> List[float]:
         """
-        Generates an embedding vector for the given text.
+        Generates an embedding vector for the given text with in-memory caching.
         - Production: uses text-embedding-3-small via OpenAI API.
         - Development: set EMBEDDING_PROVIDER=local in .env to use a free
           local sentence-transformers model (no API key needed).
         """
-        if os.getenv("EMBEDDING_PROVIDER") == "local":
-            return await self._embed_local(text)
+        if not hasattr(self, "_embedding_cache"):
+            self._embedding_cache = {}
 
-        model = kwargs.get("model", "text-embedding-3-small")
-        response = await self.client.embeddings.create(
-            model=model,
-            input=text,
-            **{k: v for k, v in kwargs.items() if k not in ["model"]}
-        )
-        return response.data[0].embedding
+        cache_key = text.strip().lower()
+        if cache_key in self._embedding_cache:
+            return self._embedding_cache[cache_key]
+
+        if os.getenv("EMBEDDING_PROVIDER") == "local":
+            res = await self._embed_local(text)
+        else:
+            model = kwargs.get("model", "text-embedding-3-small")
+            response = await self.client.embeddings.create(
+                model=model,
+                input=text,
+                **{k: v for k, v in kwargs.items() if k not in ["model"]}
+            )
+            res = response.data[0].embedding
+
+        # Cache up to 1000 items in memory
+        if len(self._embedding_cache) < 1000:
+            self._embedding_cache[cache_key] = res
+
+        return res
 
     async def _embed_local(self, text: str) -> List[float]:
         """

@@ -297,13 +297,12 @@ class ChatPipeline:
 
         conversation_id = self.get_or_create_conversation(conversation_id, session_id)
         history = self.load_history(conversation_id)
-        memory_context, recent_messages = await self.build_memory_context(
-            conversation_id, history
+        (memory_context, recent_messages), retrieval = await asyncio.gather(
+            self.build_memory_context(conversation_id, history),
+            self.retrieve(message),
         )
 
         self.save_message(conversation_id, "user", message)
-
-        retrieval = await self.retrieve(message)
         chunks = retrieval["chunks"]
 
         if self.guardrails.should_abstain(chunks):
@@ -377,12 +376,11 @@ class ChatPipeline:
             yield sse("meta", {"conversation_id": conversation_id})
 
             history = self.load_history(conversation_id)
-            memory_context, recent_messages = await self.build_memory_context(
-                conversation_id, history
+            (memory_context, recent_messages), retrieval = await asyncio.gather(
+                self.build_memory_context(conversation_id, history),
+                self.retrieve(message),
             )
             self.save_message(conversation_id, "user", message)
-
-            retrieval = await self.retrieve(message)
             chunks = retrieval["chunks"]
 
             if self.guardrails.should_abstain(chunks):
