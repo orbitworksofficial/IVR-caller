@@ -9,6 +9,7 @@ means the streaming path can never drift from the guardrails on the JSON path.
 import json
 import time
 import logging
+import asyncio
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from supabase import Client
