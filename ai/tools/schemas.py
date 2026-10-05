@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 class CreateLeadSchema(BaseModel):
     """Tool schema for creating a new sales lead."""
@@ -34,9 +34,80 @@ class GetBusinessHoursSchema(BaseModel):
     """Tool schema for retrieving business hours of the tenant."""
     pass
 
+
+# ── Voice / Call-specific tool schemas ───────────────────────────────────────
+
+class BookAppointmentSchema(BaseModel):
+    """Tool schema for booking a Calendly appointment live on a call."""
+    contact_name: str = Field(..., description="Full name of the caller booking the appointment.")
+    contact_phone: str = Field(..., description="Caller's phone number in E.164 format.")
+    contact_email: Optional[str] = Field(None, description="Caller's email if provided.")
+    service_of_interest: Optional[str] = Field(None, description="Service or product the appointment is for.")
+    preferred_time: Optional[str] = Field(
+        None,
+        description="Caller's stated preference for time (e.g. 'tomorrow afternoon', 'next Monday morning'). "
+                    "Send the Calendly link — Kashif's integration handles actual slot resolution."
+    )
+
+
+class RescheduleAppointmentSchema(BaseModel):
+    """Tool schema for rescheduling an existing Calendly booking."""
+    booking_reference: Optional[str] = Field(
+        None,
+        description="Calendly booking ID or event UUID if known."
+    )
+    contact_phone: str = Field(..., description="Caller's phone number to identify the booking.")
+    new_preferred_time: Optional[str] = Field(
+        None,
+        description="Caller's stated new preferred time. Kashif's integration handles actual slot resolution."
+    )
+    reason: Optional[str] = Field(None, description="Reason for reschedule if the caller mentioned one.")
+
+
+class CheckConsentSchema(BaseModel):
+    """Tool schema for checking outbound call consent and DNC status before dialling."""
+    phone_number: str = Field(..., description="E.164 phone number to check consent for.")
+    consent_type: str = Field(
+        "call",
+        description="Type of consent to verify: 'call', 'sms', or 'email'."
+    )
+
+
+class LogDispositionSchema(BaseModel):
+    """Tool schema for writing the call outcome/disposition to the CRM at call end."""
+    call_id: str = Field(..., description="UUID of the current call record.")
+    outcome: str = Field(
+        ...,
+        description=(
+            "Call outcome. One of: 'resolved', 'booked', 'qualified', "
+            "'transferred', 'declined', 'voicemail', 'dropped', 'callback_requested'."
+        )
+    )
+    disposition_note: Optional[str] = Field(
+        None,
+        description="Short free-text CRM note about what happened on the call."
+    )
+    lead_id: Optional[str] = Field(None, description="UUID of the lead if one was created or updated.")
+
+
+class RequestWarmTransferSchema(BaseModel):
+    """Tool schema for initiating a live warm transfer to a human team member during a call."""
+    reason: str = Field(..., description="Why a human team member is needed right now.")
+    context_summary: str = Field(
+        ...,
+        description="Compact summary of the call so far — the human agent will read this immediately on transfer."
+    )
+    caller_name: Optional[str] = Field(None, description="Caller's name if known.")
+    caller_phone: Optional[str] = Field(None, description="Caller's phone number.")
+    urgency: str = Field(
+        "normal",
+        description="Transfer urgency: 'normal' | 'high' (caller is frustrated or upset)."
+    )
+
+
 # Helper function to generate OpenAI Tool Definition format
-def get_tools_definition() -> List[dict]:
-    return [
+def get_tools_definition(voice_mode: bool = False) -> List[Dict[str, Any]]:
+    tools = [
         {
             "type": "function",
             "function": {
@@ -86,3 +157,66 @@ def get_tools_definition() -> List[dict]:
             }
         }
     ]
+
+    # Voice/call-specific tools — only available during phone calls
+    if voice_mode:
+        tools += [
+            {
+                "type": "function",
+                "function": {
+                    "name": "book_appointment",
+                    "description": (
+                        "Book a Calendly appointment for the caller. Call this when the caller agrees to "
+                        "schedule a meeting or discovery call. Returns a booking confirmation link."
+                    ),
+                    "parameters": BookAppointmentSchema.model_json_schema()
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "reschedule_appointment",
+                    "description": (
+                        "Reschedule an existing appointment. Call this when the caller says they need to "
+                        "change the time of a previously booked meeting."
+                    ),
+                    "parameters": RescheduleAppointmentSchema.model_json_schema()
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "check_consent",
+                    "description": (
+                        "Check if a phone number has valid outbound call consent and is not on the DNC list. "
+                        "MUST be called before any outbound dial attempt."
+                    ),
+                    "parameters": CheckConsentSchema.model_json_schema()
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "log_disposition",
+                    "description": (
+                        "Log the call outcome and disposition note to the CRM at the end of a call. "
+                        "Call this when the call is about to end or after a handoff."
+                    ),
+                    "parameters": LogDispositionSchema.model_json_schema()
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "request_warm_transfer",
+                    "description": (
+                        "Initiate a live warm transfer to a human team member. Call this when the caller "
+                        "explicitly asks for a human, or when the AI cannot resolve the caller's issue. "
+                        "Different from request_human_handoff — this is a real-time live call transfer."
+                    ),
+                    "parameters": RequestWarmTransferSchema.model_json_schema()
+                }
+            },
+        ]
+
+    return tools
