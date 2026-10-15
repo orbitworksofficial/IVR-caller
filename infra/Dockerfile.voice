@@ -1,0 +1,41 @@
+# Voice Gateway — Twilio Media Streams handler
+#
+# Separate image/process from the chat API: media streaming is latency- and
+# CPU-sensitive, and isolating it means a chat traffic spike cannot add jitter
+# to live calls (implementation plan §09 Operations). Same AI code, same DB.
+
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir "uvicorn[standard]"
+
+# The gateway imports the shared AI layer and apps.api.supabase_client.
+COPY ai/ ./ai/
+COPY apps/__init__.py ./apps/
+COPY apps/api/ ./apps/api/
+COPY apps/voice_gateway/ ./apps/voice_gateway/
+
+RUN useradd --create-home --shell /bin/bash appuser \
+    && chown -R appuser:appuser /app
+USER appuser
+
+EXPOSE 8001
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD curl -fsS http://localhost:8001/voice/health || exit 1
+
+# A single uvicorn process: each live call is one long-lived WebSocket plus a
+# handful of asyncio tasks, so one event loop carries many concurrent calls.
+# Scale out with more containers rather than more workers (Phase 3).
+CMD ["uvicorn", "apps.voice_gateway.main:app", "--host", "0.0.0.0", "--port", "8001", "--ws-ping-interval", "20"]

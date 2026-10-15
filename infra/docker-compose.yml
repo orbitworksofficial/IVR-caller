@@ -62,6 +62,53 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  # Opt-in: started only with `--profile voice`, so chatbot deploys keep
+  # working on a server whose .env has no Deepgram/ElevenLabs/Twilio keys yet.
+  # Voice keys are therefore not marked required here; the gateway logs a
+  # warning at startup and rejects calls until they are set.
+  #   ./infra/dc --profile voice up -d --build voice
+  voice:
+    profiles: ["voice"]
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.voice
+    image: orbitworks/voice-gateway:latest
+    container_name: orbitworks-voice-gateway
+    restart: unless-stopped
+    ports:
+      - "${VOICE_BIND:-127.0.0.1}:${VOICE_PORT:-18001}:8001"
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL:?SUPABASE_URL is required}
+      SUPABASE_KEY: ${SUPABASE_KEY:?SUPABASE_KEY is required}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY:?SUPABASE_SERVICE_KEY is required}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY is required}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
+      DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
+      DEEPGRAM_MODEL: ${DEEPGRAM_MODEL:-nova-2-phonecall}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      ELEVENLABS_DEFAULT_VOICE_ID: ${ELEVENLABS_DEFAULT_VOICE_ID:-21m00Tcm4TlvDq8ikWAM}
+      ELEVENLABS_MODEL_ID: ${ELEVENLABS_MODEL_ID:-eleven_flash_v2_5}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      VOICE_PUBLIC_BASE_URL: ${VOICE_PUBLIC_BASE_URL:-}
+      VOICE_VALIDATE_TWILIO_SIGNATURE: ${VOICE_VALIDATE_TWILIO_SIGNATURE:-true}
+      VOICE_RECORDING_ENABLED: ${VOICE_RECORDING_ENABLED:-true}
+      VOICE_DIAL_API_KEY: ${VOICE_DIAL_API_KEY:-}
+      VOICE_ENDPOINTING_MS: ${VOICE_ENDPOINTING_MS:-400}
+      VOICE_DEAD_AIR_TIMEOUT_MS: ${VOICE_DEAD_AIR_TIMEOUT_MS:-2000}
+    networks:
+      - chatbot
+    # Same IPv4-resolver fix as the api service — OpenAI, Deepgram and
+    # ElevenLabs are all reached from inside this container.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
   admin:
     build:
       context: ..
