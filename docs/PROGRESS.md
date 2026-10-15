@@ -61,7 +61,7 @@
 - Migration `20261015000011_outbound_dialing.sql`: `ivr_bot_configs.voicemail_message` + dial-attempt indexes. Added `tzdata` to requirements.
 - **`scripts/voice_consent.py`**: grant/revoke consent, add/remove DNC, `check` (dry run), `dial`. A stopgap until the admin UI.
 - **Tests:** `tests/test_outbound.py`, 40 tests. All voice suites: **120/120 pass**.
-- Committed: `0c3d4f4` on branch `feature/voice-gateway-mediastreams` (together with the Phase 1 gateway).
+- Committed: `0c3d4f4` on branch `feature/voice-gateway-mediastreams` (together with the Phase 1 gateway). Campaign runner: `67a755f`. Branch pushed to origin on 2026-10-15; PR not opened yet.
 
 ### Campaign runner — Kashif (2026-10-15, Phase 2)
 - **`campaign_contacts`** table (migration `20261015000012`): each campaign's call list, with states `pending` → `dialing` → `done` / `pending` (retry) / `exhausted`, or `blocked`. Also adds `call_campaigns.max_concurrent` (default 2).
