@@ -12,9 +12,11 @@ python-dotenv>=1.0.1
 pdfplumber>=0.11.0           # PDF text extraction for knowledge ingestion
 
 # ── Voice / AI IVR Layer (Hammad — Phase 1 & 2) ──────────────────────────────
-deepgram-sdk>=3.4.0          # Streaming STT: Deepgram Nova (8kHz phone audio)
+deepgram-sdk>=3.4.0,<5       # <5: v5+ removed DeepgramClientOptions + listen.asyncwebsocket used by DeepgramSTT. Streaming STT: Deepgram Nova (8kHz phone audio)
 elevenlabs>=1.3.0            # Streaming TTS: ElevenLabs Flash / Turbo
 websockets>=12.0             # Deepgram streaming WebSocket transport
+aiohttp>=3.9.0               # ElevenLabsTTS HTTP streaming (was imported but not listed)
+tzdata                       # IANA timezones for outbound calling windows (slim images/Windows lack a tz db)
 
 # ── Dev / Test ────────────────────────────────────────────────────────────────
 pytest>=8.0.0
