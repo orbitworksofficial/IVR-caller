@@ -68,9 +68,27 @@ curl -X POST https://chat.orb-itworks.com/voice/outbound/dial -H "X-Voice-Api-Ke
 ```
 The bot needs a `phone_numbers` row with direction `outbound` or `both` (`add_phone_number.py` creates `both`). To leave voicemails, set `ivr_bot_configs.voicemail_message`.
 
+### Campaigns
+
+The campaign runner ([campaign_runner.py](../apps/voice_gateway/campaign_runner.py)) runs inside the gateway when `VOICE_CAMPAIGN_RUNNER=true`. Every `VOICE_CAMPAIGN_POLL_S` seconds (default 30), for each **active** campaign, it:
+1. **Reconciles** contacts whose call has ended. Answered → `done`. Voicemail, no answer, busy or failed → `pending` again after `retry_interval_hours`, or `exhausted` at the attempt limit. A call with no status for 2h is released as `stale`.
+2. **Dials** due `pending` contacts, never more than `max_concurrent` live calls per campaign (default 2). Every dial goes through the dial policy. DNC, no consent or a bad number → `blocked` permanently. Outside the calling window → retried in 15 minutes.
+3. **Completes** the campaign once no contacts are `pending` or `dialing`.
+
+Claims are compare-and-set, so running more than one gateway instance never dials a contact twice.
+
+```bash
+python scripts/voice_campaign.py create --name "Sept web leads" --reason "Follow up on their website enquiry"
+python scripts/voice_campaign.py add    <campaign_id> --csv leads.csv        # phone_number[,lead_id]
+python scripts/voice_campaign.py start  <campaign_id>
+python scripts/voice_campaign.py status <campaign_id>                        # counts by status / outcome
+python scripts/voice_campaign.py pause  <campaign_id>                        # stops new dials immediately
+```
+Adding a number to a campaign grants nothing; each contact still needs a consent record (`voice_consent.py grant`).
+
 ## One-time setup
 
-1. **Migrations:** `supabase db push`. This applies `20261007000009_call_tables.sql`, `20261007000010_voice_profiles_and_recordings.sql` and `20261015000011_outbound_dialing.sql`.
+1. **Migrations:** `supabase db push`. This applies `20261007000009_call_tables.sql`, `20261007000010_voice_profiles_and_recordings.sql` and `20261015000011_outbound_dialing.sql`, `20261015000012_campaign_contacts.sql`.
 2. **Env** (`.env`, see `.env.example`): `DEEPGRAM_API_KEY`, `ELEVENLABS_API_KEY`, `ELEVENLABS_DEFAULT_VOICE_ID`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `VOICE_PUBLIC_BASE_URL`.
 3. **Map the number to a bot:**
    ```bash

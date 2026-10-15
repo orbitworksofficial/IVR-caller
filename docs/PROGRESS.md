@@ -5,7 +5,7 @@
 > the *Orbit Works AI IVR Caller Implementation Plan v1.0* (24 Sep 2026).
 > Owners: **Kashif** = telephony/platform · **Hammad** = voice AI · **Usman** = QA/evals.
 
-**Last updated:** 2026-10-15 by Kashif. Outbound calling with consent/DNC/window enforcement is built (Phase 2). Phase 1's live test call is still waiting on accounts and keys.
+**Last updated:** 2026-10-15 by Kashif. Outbound calling and the campaign runner are built (Phase 2). Phase 1's live test call is still waiting on accounts and keys.
 
 ---
 
@@ -61,6 +61,17 @@
 - Migration `20261015000011_outbound_dialing.sql`: `ivr_bot_configs.voicemail_message` + dial-attempt indexes. Added `tzdata` to requirements.
 - **`scripts/voice_consent.py`**: grant/revoke consent, add/remove DNC, `check` (dry run), `dial`. A stopgap until the admin UI.
 - **Tests:** `tests/test_outbound.py`, 40 tests. All voice suites: **120/120 pass**.
+- Committed: `0c3d4f4` on branch `feature/voice-gateway-mediastreams` (together with the Phase 1 gateway).
+
+### Campaign runner — Kashif (2026-10-15, Phase 2)
+- **`campaign_contacts`** table (migration `20261015000012`): each campaign's call list, with states `pending` → `dialing` → `done` / `pending` (retry) / `exhausted`, or `blocked`. Also adds `call_campaigns.max_concurrent` (default 2).
+- **`apps/voice_gateway/campaign_runner.py`**: background loop in the gateway (`VOICE_CAMPAIGN_RUNNER=true`, off by default).
+  - Reconciles finished calls, then dials due contacts up to `max_concurrent`, **always through `place_outbound_call`**, so the dial policy applies to every dial.
+  - Then marks the campaign completed once nobody is left to call.
+  - DNC, no consent or an invalid number → `blocked` for good. Outside the window → retried in 15 min. Voicemail, no answer or busy → retried after `retry_interval_hours`.
+  - Lost status callbacks are released after 2h, so a contact can't hold a slot forever. Compare-and-set claims make it safe to run on more than one instance.
+- **`scripts/voice_campaign.py`**: create / add (numbers or CSV) / start / pause / status.
+- **Tests:** `tests/test_campaign_runner.py`, 15 tests. All voice suites: **135/135 pass**.
 
 ---
 
@@ -105,12 +116,13 @@ Each one is worked around in the gateway without editing `ai/`, but the proper f
 - [x] Consent / DNC / calling-window enforcement **at the dial layer** ✅ 2026-10-15
 - [x] Outbound dialer service + answering-machine detection → voicemail message / disposition ✅ 2026-10-15
 - [x] Opt-out ("remove me") → `dnc_list` immediately ✅ 2026-10-15
-- [ ] Campaign runner: works through a `call_campaigns` list on a schedule (calls `place_outbound_call`, so all the policy checks apply)
+- [x] Campaign runner: works through a campaign's call list on a schedule ✅ 2026-10-15
 
 **Phase 3: production hardening**
 - [ ] Copy recordings to Supabase Storage; per-tenant retention (`call_recordings.expires_at`)
 - [ ] Sentry + alerts: dropped calls, STT/TTS failures, latency SLO breaches
 - [ ] Rate limiting on the gateway; concurrency/scaling (more containers)
+- [ ] Campaign status counts are computed in Python (fine for hundreds of contacts). Move to a SQL count/RPC for large lists.
 - [ ] Per-call cost into `usage_events` (telephony/STT/TTS/LLM tokens)
 - [ ] Go live on the Orbit Works main number
 
@@ -124,6 +136,7 @@ Each one is worked around in the gateway without editing `ai/`, but the proper f
 
 | Date | Who | What |
 |---|---|---|
+| 2026-10-15 | Kashif | Campaign runner (Phase 2): `campaign_contacts` queue + migration 0012, background runner with concurrency limit, retry/exhaust/block handling and safe multi-instance claims, campaign CLI, 15 tests (135/135 voice tests pass) |
 | 2026-10-15 | Kashif | Outbound calling (Phase 2): fail-closed dial policy (consent/DNC/window/attempts/retry), Twilio dialer with AMD + voicemail, dial API, verbal opt-out → DNC, consent CLI, migration 0011, 40 tests (120/120 voice tests pass). Logged H9–H11 for Hammad |
 | 2026-10-07 | Kashif | Voice Gateway (Phase 1): Twilio webhooks + Media Stream bridge, call persistence, recording, migrations moved to `supabase/`, Docker/nginx, tests (80/80 voice tests pass), this progress file |
 | 2026-09-24 | Hammad | Voice AI layer Phase 1 & 2 (`6786918`) |

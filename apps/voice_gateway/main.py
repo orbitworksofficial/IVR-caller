@@ -16,6 +16,7 @@ Run locally:
     uvicorn apps.voice_gateway.main:app --port 8001
 """
 
+import asyncio
 import hmac
 import logging
 import os
@@ -28,6 +29,7 @@ from pydantic import BaseModel
 from apps.voice_gateway import twilio_utils
 from apps.voice_gateway.call_store import CallStore, _now_iso
 from apps.voice_gateway.components import build_call_components
+from apps.voice_gateway.campaign_runner import CampaignRunner, poll_interval, runner_enabled
 from apps.voice_gateway.outbound import place_outbound_call
 from apps.voice_gateway.session import CallSession
 
@@ -57,6 +59,21 @@ async def _check_env() -> None:
         # Without TWILIO_AUTH_TOKEN every webhook fails signature checks (403),
         # so a misconfigured gateway rejects calls instead of half-working.
         logger.warning(f"Voice Gateway missing env: {', '.join(missing)} — calls will fail until set.")
+
+
+@app.on_event("startup")
+async def _start_campaign_runner() -> None:
+    if runner_enabled():
+        app.state.campaign_task = asyncio.create_task(
+            CampaignRunner(get_store()).run_forever(poll_interval())
+        )
+
+
+@app.on_event("shutdown")
+async def _stop_campaign_runner() -> None:
+    task = getattr(app.state, "campaign_task", None)
+    if task:
+        task.cancel()
 
 
 def get_store() -> CallStore:

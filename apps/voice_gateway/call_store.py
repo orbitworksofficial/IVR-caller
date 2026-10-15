@@ -265,6 +265,76 @@ class CallStore:
             .eq("consent_type", "call").is_("revoked_at", "null").execute()
         )
 
+    # ── Campaign runner ───────────────────────────────────────────────────────
+    # The runner works across tenants by design (it is the platform's dialer),
+    # so these reads are campaign-scoped; every dial it makes still runs the
+    # tenant-scoped dial policy.
+
+    async def list_active_campaigns(self) -> List[Dict[str, Any]]:
+        res = await self._run(
+            lambda: self.db.table("call_campaigns").select("*").eq("status", "active").execute()
+        )
+        return res.data or []
+
+    async def list_contacts(self, campaign_id: str, status: str) -> List[Dict[str, Any]]:
+        res = await self._run(
+            lambda: self.db.table("campaign_contacts").select("*")
+            .eq("campaign_id", campaign_id).eq("status", status).execute()
+        )
+        return res.data or []
+
+    async def due_contacts(self, campaign_id: str, now_iso: str, limit: int) -> List[Dict[str, Any]]:
+        res = await self._run(
+            lambda: self.db.table("campaign_contacts").select("*")
+            .eq("campaign_id", campaign_id).eq("status", "pending")
+            .lte("next_attempt_at", now_iso)
+            .order("next_attempt_at").limit(limit).execute()
+        )
+        return res.data or []
+
+    async def claim_contact(self, contact_id: str, now_iso: str) -> bool:
+        """Compare-and-set pending → dialing; False if another runner got there first."""
+        res = await self._run(
+            lambda: self.db.table("campaign_contacts")
+            .update({"status": "dialing", "claimed_at": now_iso})
+            .eq("id", contact_id).eq("status", "pending").execute()
+        )
+        return bool(res.data)
+
+    async def update_contact(self, contact_id: str, update: Dict[str, Any]) -> None:
+        await self._run(
+            lambda: self.db.table("campaign_contacts").update(update).eq("id", contact_id).execute()
+        )
+
+    async def get_call_progress(self, call_id: Optional[str]):
+        """(dial_attempts.outcome, calls.status) for a campaign call."""
+        if not call_id:
+            return None, "failed"
+        call = await self._run(
+            lambda: self.db.table("calls").select("status").eq("id", call_id).limit(1).execute()
+        )
+        attempt = await self._run(
+            lambda: self.db.table("dial_attempts").select("outcome").eq("call_id", call_id).limit(1).execute()
+        )
+        status = call.data[0]["status"] if call.data else "failed"
+        outcome = attempt.data[0]["outcome"] if attempt.data else None
+        return outcome, status
+
+    async def contact_status_counts(self, campaign_id: str) -> Dict[str, int]:
+        res = await self._run(
+            lambda: self.db.table("campaign_contacts").select("status").eq("campaign_id", campaign_id).execute()
+        )
+        counts: Dict[str, int] = {}
+        for row in res.data or []:
+            counts[row["status"]] = counts.get(row["status"], 0) + 1
+        return counts
+
+    async def set_campaign_status(self, campaign_id: str, tenant_id: str, status: str) -> None:
+        await self._run(
+            lambda: self.db.table("call_campaigns").update({"status": status})
+            .eq("id", campaign_id).eq("tenant_id", tenant_id).execute()
+        )
+
     async def finalize_call(
         self,
         call_id: str,
