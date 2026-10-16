@@ -22,7 +22,7 @@ from ai.providers.routing import ModelRouter
 TENANT_ID = os.getenv("TEST_TENANT_ID", "03c254d0-0681-48e9-a425-64c6460d53c0")
 BOT_ID = os.getenv("TEST_BOT_ID", "b28eb4cc-6886-4500-bf18-5b9cfc519244")
 
-async def test_end_to_end_flow(query: str, description: str):
+async def run_end_to_end_flow(query: str, description: str):
     print(f"\n--- Testing: {description} ---")
     print(f"Query: '{query}'")
     
@@ -134,7 +134,7 @@ async def run_all_verifications():
     results = []
     for query, desc in tests:
         try:
-            res = await test_end_to_end_flow(query, desc)
+            res = await run_end_to_end_flow(query, desc)
             results.append((desc, res))
         except Exception as e:
             print(f"❌ ERROR on '{desc}': {e}")

@@ -613,3 +613,208 @@ class TestVoiceToolSchemas:
         outcome_desc = schema["properties"]["outcome"]["description"]
         for expected in ["booked", "qualified", "transferred", "voicemail"]:
             assert expected in outcome_desc
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VoiceOrchestrator Integration Tests (Tool Calling, Hooks & Latency)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestVoiceOrchestratorIntegrations:
+
+    @pytest.mark.asyncio
+    async def test_tool_calling_warm_transfer_triggers_callback(self, tool_executor, mock_supabase):
+        """Warm transfer intent triggers tool_call and fires on_warm_transfer callback."""
+        from ai.voice_orchestrator import VoiceOrchestrator
+        from ai.stt_tts.turn_manager import TurnManager, VoiceSession
+        from ai.memory.memory_manager import MemoryManager
+
+        session = VoiceSession(call_id="call-transfer-01", tenant_id="tenant-test-001", bot_id="bot-test-001")
+        tm = TurnManager(session=session, endpointing_ms=50)
+
+        # Mock tool call returning request_warm_transfer
+        mock_tc = MagicMock()
+        mock_tc.id = "tc-1"
+        mock_tc.function.name = "request_warm_transfer"
+        mock_tc.function.arguments = json.dumps({
+            "reason": "Caller asked for human",
+            "context_summary": "Inquiring about pricing",
+            "caller_name": "Alice",
+            "urgency": "normal"
+        })
+
+        provider = MagicMock()
+        provider.supports_streaming = True
+        provider.tool_call = AsyncMock(return_value={
+            "tool_calls": [mock_tc],
+            "message": MagicMock(content="Transferring you now")
+        })
+
+        async def fake_stream(messages, **kw):
+            yield "Let me connect you "
+            yield "with a team member right now."
+
+        provider.stream = fake_stream
+        provider.embed = AsyncMock(return_value=[0.1] * 1536)
+
+        retriever = MagicMock()
+        retriever.retrieve = AsyncMock(return_value=["OrbitWorks provides AI automation."])
+
+        tts = MagicMock()
+        async def fake_stream_sentences(gen):
+            async for _ in gen:
+                yield b"\x00\x01" * 80
+        tts.stream_sentences = fake_stream_sentences
+        tts.stream_text = AsyncMock()
+
+        audio_received = []
+        async def audio_sink(chunk):
+            audio_received.append(chunk)
+
+        orch = VoiceOrchestrator(
+            provider=provider,
+            retriever=retriever,
+            tool_executor=tool_executor,
+            memory_manager=MemoryManager(),
+            turn_manager=tm,
+            tts=tts,
+            session=session,
+            tenant_config={"business_name": "OrbitWorks", "call_direction": "inbound"},
+            audio_sink=audio_sink,
+        )
+
+        warm_transfer_called = []
+        async def on_transfer(details):
+            warm_transfer_called.append(details)
+
+        orch.on_warm_transfer = on_transfer
+
+        # Caller turn asking for a human
+        await orch._handle_turn("Can I speak to a real person please?")
+
+        assert len(warm_transfer_called) == 1
+        assert warm_transfer_called[0]["status"] == "transfer_initiated"
+        assert len(audio_received) > 0
+        assert len(orch.call_turns) >= 2
+        assert orch.call_turns[-1]["speaker"] == "agent"
+
+    @pytest.mark.asyncio
+    async def test_tool_calling_book_appointment_triggers_callback(self, tool_executor, mock_supabase):
+        """Booking appointment intent triggers tool_call and fires on_appointment_booked callback."""
+        from ai.voice_orchestrator import VoiceOrchestrator
+        from ai.stt_tts.turn_manager import TurnManager, VoiceSession
+        from ai.memory.memory_manager import MemoryManager
+
+        session = VoiceSession(call_id="call-booking-01", tenant_id="tenant-test-001", bot_id="bot-test-001")
+        tm = TurnManager(session=session, endpointing_ms=50)
+
+        mock_supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value.data = [
+            {"booking_url": "https://calendly.com/orbitworksofficial01/30min", "name": "OrbitWorks"}
+        ]
+
+        mock_tc = MagicMock()
+        mock_tc.id = "tc-2"
+        mock_tc.function.name = "book_appointment"
+        mock_tc.function.arguments = json.dumps({
+            "contact_name": "Bob",
+            "contact_phone": "+14435550199",
+            "service_of_interest": "Voice AI"
+        })
+
+        provider = MagicMock()
+        provider.supports_streaming = True
+        provider.tool_call = AsyncMock(return_value={
+            "tool_calls": [mock_tc],
+            "message": MagicMock(content="Booking link sent")
+        })
+
+        async def fake_stream(messages, **kw):
+            yield "I've scheduled that for you. "
+            yield "Check your calendar for confirmation."
+
+        provider.stream = fake_stream
+        provider.embed = AsyncMock(return_value=[0.1] * 1536)
+
+        retriever = MagicMock()
+        retriever.retrieve = AsyncMock(return_value=["OrbitWorks scheduling available."])
+
+        tts = MagicMock()
+        async def fake_stream_sentences(gen):
+            async for _ in gen:
+                yield b"\x00\x01" * 80
+        tts.stream_sentences = fake_stream_sentences
+
+        orch = VoiceOrchestrator(
+            provider=provider,
+            retriever=retriever,
+            tool_executor=tool_executor,
+            memory_manager=MemoryManager(),
+            turn_manager=tm,
+            tts=tts,
+            session=session,
+            tenant_config={"business_name": "OrbitWorks", "call_direction": "inbound"},
+            audio_sink=AsyncMock(),
+        )
+
+        appointment_booked_events = []
+        async def on_booked(details):
+            appointment_booked_events.append(details)
+
+        orch.on_appointment_booked = on_booked
+
+        await orch._handle_turn("I'd like to book an appointment for tomorrow.")
+
+        assert len(appointment_booked_events) == 1
+        assert appointment_booked_events[0]["status"] == "booking_link_provided"
+        assert "calendly" in appointment_booked_events[0]["booking_url"].lower()
+
+    @pytest.mark.asyncio
+    async def test_public_hooks_and_call_turns_property(self, tool_executor):
+        """Public hooks (on_agent_turn, call_turns property) behave properly."""
+        from ai.voice_orchestrator import VoiceOrchestrator
+        from ai.stt_tts.turn_manager import TurnManager, VoiceSession
+        from ai.memory.memory_manager import MemoryManager
+
+        session = VoiceSession(call_id="call-hooks-01", tenant_id="tenant-test-001", bot_id="bot-test-001")
+        tm = TurnManager(session=session, endpointing_ms=50)
+
+        provider = MagicMock()
+        provider.supports_streaming = True
+        async def fake_stream(messages, **kw):
+            yield "We are open Monday through Friday."
+        provider.stream = fake_stream
+
+        retriever = MagicMock()
+        retriever.retrieve = AsyncMock(return_value=["Hours: 9am-6pm"])
+
+        tts = MagicMock()
+        async def fake_stream_sentences(gen):
+            async for _ in gen:
+                yield b"\x00" * 160
+        tts.stream_sentences = fake_stream_sentences
+
+        orch = VoiceOrchestrator(
+            provider=provider,
+            retriever=retriever,
+            tool_executor=tool_executor,
+            memory_manager=MemoryManager(),
+            turn_manager=tm,
+            tts=tts,
+            session=session,
+            tenant_config={"business_name": "OrbitWorks", "call_direction": "inbound"},
+            audio_sink=AsyncMock(),
+        )
+
+        turns_seen = []
+        async def on_turn(text):
+            turns_seen.append(text)
+
+        orch.on_agent_turn = on_turn
+
+        await orch._handle_turn("What are your business hours?")
+
+        assert len(turns_seen) == 1
+        assert "open Monday through Friday" in turns_seen[0]
+        assert len(orch.call_turns) == 2
+        assert orch.call_turns[0]["speaker"] == "caller"
+        assert orch.call_turns[1]["speaker"] == "agent"
+

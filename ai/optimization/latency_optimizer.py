@@ -83,6 +83,23 @@ class VoiceSessionCache:
             warmed_at=time.monotonic(),
         )
 
+    async def prefetch_tenant_config(self, tenant_id: str, bot_id: Optional[str] = None) -> dict:
+        """Prefetch tenant config and return dictionary for voice session initialization."""
+        data = await self.warm_up(tenant_id=tenant_id, bot_id=bot_id or "")
+        return {
+            "business_name": data.business_name,
+            "business_context": data.business_context,
+            "booking_url": data.booking_url,
+            "voice_id": data.voice_id,
+            "call_direction": data.call_direction,
+        }
+
+    async def prewarm_faq_embeddings(self, tenant_id: str, bot_id: str, query: str = "") -> list:
+        """Pre-warm FAQ chunks for the call."""
+        data = await self.warm_up(tenant_id=tenant_id, bot_id=bot_id, opening_utterance=query)
+        return data.pre_warmed_chunks
+
+
 class TurnTimer:
     def __init__(self, tracker: 'LatencyBudgetTracker', turn_id: str):
         self.tracker = tracker

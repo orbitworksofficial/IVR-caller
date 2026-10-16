@@ -161,3 +161,31 @@ async def start_call_recording(call_sid: str, status_callback_url: str) -> Optio
     except Exception as e:
         logger.error(f"Twilio start-recording error: {e}")
         return None
+
+
+async def transfer_call(call_sid: str, to_number: str, message: Optional[str] = None) -> bool:
+    """
+    Redirects a live Twilio call to a new phone number (warm transfer).
+    Updates the in-progress call with TwiML containing <Say> and <Dial>.
+    """
+    account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
+    if not account_sid or not auth_token():
+        logger.warning("Twilio credentials missing — cannot execute warm transfer.")
+        return False
+
+    say_xml = f"<Say>{escape(message)}</Say>" if message else ""
+    twiml = f'<?xml version="1.0" encoding="UTF-8"?><Response>{say_xml}<Dial>{escape(to_number)}</Dial></Response>'
+    url = f"{TWILIO_API_BASE}/Accounts/{account_sid}/Calls/{call_sid}.json"
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(url, data={"Twiml": twiml}, auth=(account_sid, auth_token()))
+        if resp.status_code >= 300:
+            logger.error(f"Twilio warm transfer failed ({resp.status_code}): {resp.text}")
+            return False
+        logger.info(f"Twilio warm transfer executed for call {call_sid} -> {to_number}")
+        return True
+    except Exception as e:
+        logger.error(f"Twilio warm transfer error for call {call_sid}: {e}")
+        return False
+

@@ -135,3 +135,26 @@ class SecurityEnforcedRetrieval:
             return {"chunks": fts_results, "retrieval_mode": "fts_fallback"}
 
         return {"chunks": [], "retrieval_mode": "empty"}
+
+
+class VoiceRetriever:
+    """
+    RAG retriever adapter for voice calls (implementation plan §04/§05).
+    Computes query embeddings before invoking retrieve_with_fallback, returning
+    chunk content strings suitable for voice prompt grounding.
+    """
+
+    def __init__(self, provider: Any, retriever: Any):
+        self.provider = provider
+        self.retriever = retriever
+
+    async def retrieve(self, query: str, tenant_id: str, bot_id: str, top_k: int = 4) -> List[str]:
+        embedding = await self.provider.embed(query)
+        result = await self.retriever.retrieve_with_fallback(
+            tenant_id=tenant_id,
+            query_text=query,
+            query_embedding=embedding,
+            limit=top_k,
+        )
+        return [c["content"] for c in result.get("chunks", []) if c.get("content")]
+
