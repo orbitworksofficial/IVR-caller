@@ -218,8 +218,16 @@ class CallSession:
             await handle_barge_in()
             await self._clear_playback()
 
+        async def on_transfer(details: Dict[str, Any]) -> None:
+            logger.info(f"Warm transfer requested on call {self._call_id}: {details}")
+            target_phone = os.getenv("VOICE_TRANSFER_PHONE_NUMBER", "")
+            if self.call_sid and target_phone:
+                msg = details.get("message") or "Transferring you to a representative now. Please hold."
+                await twilio_utils.transfer_call(self.call_sid, target_phone, msg)
+
         orch._handle_turn = timed_turn
         orch._handle_barge_in = barge_in
+        orch.on_warm_transfer = on_transfer
 
     # ── Audio out ─────────────────────────────────────────────────────────────
 

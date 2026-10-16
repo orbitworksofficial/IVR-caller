@@ -130,6 +130,9 @@ class OpenAIProvider(LLMProvider):
         return params
 
     async def generate(self, messages: List[Dict[str, str]], **kwargs) -> Dict[str, Any]:
+        if kwargs.get("stream", False):
+            return self.stream(messages, **kwargs)
+
         model = self._resolve_model(kwargs.get("model", "gpt-5.6-luna"))
         temperature = kwargs.get("temperature", 0.7)
         max_tokens = kwargs.get("max_tokens", 1000)
@@ -139,7 +142,7 @@ class OpenAIProvider(LLMProvider):
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
-            **{k: v for k, v in kwargs.items() if k not in ["model", "temperature", "max_tokens"]}
+            **{k: v for k, v in kwargs.items() if k not in ["model", "temperature", "max_tokens", "stream"]}
         )
 
         response = await self.client.chat.completions.create(**api_params)

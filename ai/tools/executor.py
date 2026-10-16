@@ -1,5 +1,6 @@
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 try:
     from supabase import Client
@@ -371,7 +372,7 @@ class ToolExecutor:
                 self.supabase.table("calls").update({
                     "outcome": outcome,
                     "disposition": note,
-                    "ended_at": "now()",
+                    "ended_at": datetime.now(timezone.utc).isoformat(),
                 }).eq("id", call_id).eq("tenant_id", self.tenant_id).execute()
 
             if lead_id and outcome in ("booked", "qualified"):

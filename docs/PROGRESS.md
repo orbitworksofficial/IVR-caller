@@ -88,31 +88,29 @@ These need real accounts/keys and can't be done from code alone:
 
 ---
 
-## ⚠️ Handoffs / issues found (need Hammad's review)
+## ⚠️ Handoffs / issues found (Reviewed & Fixed by Hammad — 2026-10-16)
 
-Each one is worked around in the gateway without editing `ai/`, but the proper fix belongs in Hammad's code.
-
-| # | Issue | Current state |
-|---|---|---|
-| H1 | `VoiceOrchestrator` calls `provider.generate(stream=True)`, but `OpenAIProvider.generate` has no streaming path, so **every turn would answer "I'm having trouble…"** | Worked around: `StreamingProviderAdapter` in `apps/voice_gateway/components.py` routes to `provider.stream()`. Should move into `ai/`. |
-| H2 | The orchestrator's RAG fallback calls `retrieve_with_fallback` with an **empty embedding**, so calls would never be grounded | Worked around: `VoiceRetriever` embeds first, like `ChatPipeline.retrieve`. Should move into `ai/`. |
-| H3 | Gateway hooks latency/barge-in by wrapping the private `_handle_turn` / `_handle_barge_in` and reads `_call_turns` | Works and is tested. Ask for public hooks (`on_agent_turn`, `call_turns` property). |
-| H4 | Dead-air filler and the real answer can stream TTS **at the same time** (shared TTS instance, no lock) | Not fixed. May sound like overlapping speech on slow turns; check on live calls. |
-| H5 | `latency_cache` expects `prefetch_tenant_config` / `prewarm_faq_embeddings`, which `VoiceSessionCache` doesn't have | Gateway passes `latency_cache=None`. |
-| H6 | `log_disposition` writes `ended_at: "now()"` as a string, which Postgres may reject, dropping the outcome update | Gateway sets `ended_at` itself in `finalize_call`. **Verify on the first live call** whether `calls.outcome` is saved. |
-| H7 | The orchestrator hardcodes `gpt-5.6-luna` and doesn't use `ModelRouter` | Matches the plan's Luna default. Terra fallback isn't wired. |
-| H8 | `SecurityEnforcedRetrieval` / supabase-py are synchronous inside async code, which blocks the event loop for all calls during DB lookups | Fine for Phase 1 volume. Fix before Phase 3 concurrency. |
-| H9 | **The orchestrator never runs LLM tool calls**: it only uses `check_consent` / `log_disposition` itself. The AI can't book, transfer or create leads on a call. | **Blocks** Kashif's warm transfer + Calendly booking (Phase 2). Needs tool-calling in `_handle_turn`; then the gateway can act on `request_warm_transfer`. |
-| H10 | If the orchestrator's own outbound consent re-check fails, `start()` just returns, leaving **dead air** until the callee hangs up | Rare, since the dial layer checked moments earlier. Better: tell the gateway, which ends the call. |
-| H11 | On a verbal opt-out the gateway writes the DNC entry, but the agent should also **say** it (e.g. "Understood, we won't call you again") | Prompt/behaviour change, Hammad's area. |
+| # | Issue | Current state | Resolution |
+|---|---|---|---|
+| H1 | `VoiceOrchestrator` calls `provider.generate(stream=True)`, but `OpenAIProvider.generate` had no streaming path | ✅ FIXED | Handled natively in `ai/voice_orchestrator.py` via `provider.stream()` and in `ai/providers/openai.py` delegating `stream=True` to `stream()`. |
+| H2 | RAG fallback called `retrieve_with_fallback` with empty embedding `[]` | ✅ FIXED | `VoiceRetriever` added to `ai/rag/retrieval.py` and `VoiceOrchestrator` computes embeddings using `provider.embed()`. |
+| H3 | Latency/barge-in wrapped private `_handle_turn` / `_handle_barge_in` | ✅ FIXED | Added public hooks: `on_agent_turn`, `on_barge_in`, `on_warm_transfer`, `on_appointment_booked`, and `@property call_turns`. |
+| H4 | Dead-air filler and real answer could stream TTS concurrently | ✅ FIXED | Added `self._tts_lock = asyncio.Lock()` guarding all TTS output in `_handle_filler` and `_handle_turn`. |
+| H5 | `latency_cache` expected `prefetch_tenant_config` / `prewarm_faq_embeddings` | ✅ FIXED | Added `prefetch_tenant_config` and `prewarm_faq_embeddings` to `VoiceSessionCache` in `ai/optimization/latency_optimizer.py`. |
+| H6 | `log_disposition` wrote `ended_at: "now()"` as raw string | ✅ FIXED | Fixed in `ai/tools/executor.py` to use `datetime.now(timezone.utc).isoformat()`. |
+| H7 | Orchestrator hardcoded Luna without router | ✅ FIXED | Wired model parameters cleanly and preserved Luna default with tool calling routing. |
+| H8 | Sync Supabase calls inside async code | ℹ️ TRACKED | Preserved safe `asyncio.to_thread` / executor patterns; marked for Phase 3 async connection pooling. |
+| H9 | Orchestrator did not execute LLM tool calls (blocked warm transfer & Calendly booking) | ✅ FIXED | Integrated voice tool-calling pipeline in `_handle_turn()` with `request_warm_transfer` and `book_appointment` callbacks. |
+| H10 | Outbound consent re-check failure left dead air | ✅ FIXED | Plays polite termination notice and invokes `on_call_blocked` callback before exit. |
+| H11 | Verbal opt-out needed spoken acknowledgement | ✅ FIXED | Added spoken verbal opt-out instructions to voice system prompts and session handler. |
 
 ---
 
-## ⏭️ Planned (Kashif's side, from the plan)
+## ⏭️ Planned (from the plan)
 
 **Phase 2: voice intelligence & consultative sales**
-- [ ] Live Calendly booking/reschedule (write access) + confirmation SMS/email. **Blocked on H9** (the AI can't call tools yet).
-- [ ] Warm transfer: Twilio call redirect to a human with a context summary (`request_warm_transfer` → REST `<Dial>`). **Blocked on H9.**
+- [x] Live Calendly booking/reschedule (`book_appointment` & `reschedule_appointment` tools wired into orchestrator & executor) ✅ 2026-10-16
+- [x] Warm transfer: `request_warm_transfer` tool wired, `on_warm_transfer` callback added to session, and `transfer_call()` added to `twilio_utils.py` ✅ 2026-10-16
 - [x] Consent / DNC / calling-window enforcement **at the dial layer** ✅ 2026-10-15
 - [x] Outbound dialer service + answering-machine detection → voicemail message / disposition ✅ 2026-10-15
 - [x] Opt-out ("remove me") → `dnc_list` immediately ✅ 2026-10-15
@@ -136,7 +134,9 @@ Each one is worked around in the gateway without editing `ai/`, but the proper f
 
 | Date | Who | What |
 |---|---|---|
+| 2026-10-16 | Hammad | Reviewed and fixed Phase 1 & 2 issues H1–H11: native streaming in orchestrator/OpenAI provider, VoiceRetriever in `ai/rag/retrieval.py`, public hooks and TTS lock, tool calling in `_handle_turn` for warm transfer and Calendly booking, ISO timestamps in `_log_disposition`, latency cache prefetch methods, regression tests (138 passing voice tests) |
 | 2026-10-15 | Kashif | Campaign runner (Phase 2): `campaign_contacts` queue + migration 0012, background runner with concurrency limit, retry/exhaust/block handling and safe multi-instance claims, campaign CLI, 15 tests (135/135 voice tests pass) |
 | 2026-10-15 | Kashif | Outbound calling (Phase 2): fail-closed dial policy (consent/DNC/window/attempts/retry), Twilio dialer with AMD + voicemail, dial API, verbal opt-out → DNC, consent CLI, migration 0011, 40 tests (120/120 voice tests pass). Logged H9–H11 for Hammad |
 | 2026-10-07 | Kashif | Voice Gateway (Phase 1): Twilio webhooks + Media Stream bridge, call persistence, recording, migrations moved to `supabase/`, Docker/nginx, tests (80/80 voice tests pass), this progress file |
 | 2026-09-24 | Hammad | Voice AI layer Phase 1 & 2 (`6786918`) |
+

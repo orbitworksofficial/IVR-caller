@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from dotenv import load_dotenv
 load_dotenv()
 
+import pytest
 from supabase import create_client
 from ai.rag.retrieval import SecurityEnforcedRetrieval
 from ai.tools.executor import ToolExecutor
@@ -23,6 +24,7 @@ TENANT_B_ID = "00000000-0000-0000-0000-000000000002"
 BOT_B_ID = "00000000-0000-0000-0000-000000000022"
 
 
+@pytest.mark.asyncio
 async def test_multi_tenant_isolation():
     print("\n--- Running Multi-Tenant Isolation Test Suite ---")
     supabase_url = os.getenv("SUPABASE_URL")

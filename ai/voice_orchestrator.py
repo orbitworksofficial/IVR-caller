@@ -1,12 +1,14 @@
 import asyncio
+import json
 import logging
 import random
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Callable, Awaitable
 
 from ai.stt_tts.turn_manager import TurnManager, VoiceSession
 from ai.stt_tts.elevenlabs import ElevenLabsTTS
 from ai.memory.memory_manager import MemoryManager
 from ai.tools.executor import ToolExecutor
+from ai.tools.schemas import get_tools_definition
 from ai.prompts.voice.templates import (
     compile_voice_prompt,
     VOICE_GREETING_TEMPLATES,
@@ -20,8 +22,8 @@ logger = logging.getLogger(__name__)
 class VoiceOrchestrator:
     """
     Central async call loop that wires together STT transcripts, RAG retrieval,
-    memory context, LLM streaming, objection handling, TTS streaming, barge-in,
-    filler injection, and call logging for Phase 2.
+    memory context, LLM streaming, objection handling, tool execution, TTS streaming,
+    barge-in, filler injection, and call logging for Phase 1 & 2.
     """
 
     def __init__(
@@ -46,17 +48,29 @@ class VoiceOrchestrator:
         self.session = session
         self.tenant_config = tenant_config
         self.latency_cache = latency_cache
-        self.audio_sink = audio_sink  # Kashif's gateway injects this at call time
+        self.audio_sink = audio_sink  # Gateway injects this at call time
 
         # Internal state
-        self._messages: List[Dict[str, str]] = []
-        self._call_turns: List[Dict[str, str]] = []
+        self._messages: List[Dict[str, Any]] = []
+        self._call_turns: List[Dict[str, Any]] = []
         self._call_summary: str = ""
         self._objection_attempts: Dict[str, int] = {}
         self._agent_speaking: bool = False
         self._structured_memory: Dict[str, Any] = {}
 
         self._turn_lock = asyncio.Lock()
+        self._tts_lock = asyncio.Lock()
+
+        # Public hooks for observability, transfers and external events
+        self.on_agent_turn: Optional[Callable[[str], Awaitable[None]]] = None
+        self.on_barge_in: Optional[Callable[[], Awaitable[None]]] = None
+        self.on_warm_transfer: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
+        self.on_appointment_booked: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
+        self.on_call_blocked: Optional[Callable[[str], Awaitable[None]]] = None
+
+    @property
+    def call_turns(self) -> List[Dict[str, Any]]:
+        return self._call_turns
 
     async def start(self) -> None:
         """
@@ -68,10 +82,13 @@ class VoiceOrchestrator:
         # If latency_cache provided: pre-fetch tenant config + pre-warm top-5 FAQ embeddings concurrently
         if self.latency_cache:
             try:
-                await asyncio.gather(
-                    self.latency_cache.prefetch_tenant_config(self.session.tenant_id),
-                    self.latency_cache.prewarm_faq_embeddings(self.session.tenant_id, self.session.bot_id)
-                )
+                if hasattr(self.latency_cache, "prefetch_tenant_config") and hasattr(self.latency_cache, "prewarm_faq_embeddings"):
+                    await asyncio.gather(
+                        self.latency_cache.prefetch_tenant_config(self.session.tenant_id, self.session.bot_id),
+                        self.latency_cache.prewarm_faq_embeddings(self.session.tenant_id, self.session.bot_id)
+                    )
+                elif hasattr(self.latency_cache, "warm_up"):
+                    await self.latency_cache.warm_up(self.session.tenant_id, self.session.bot_id)
             except Exception as e:
                 logger.warning(f"Latency cache pre-warming failed: {e}")
 
@@ -91,9 +108,26 @@ class VoiceOrchestrator:
                         logger.warning(
                             f"Consent check blocked outbound call {self.session.call_id}: {reason}"
                         )
+                        if self.on_call_blocked:
+                            await self.on_call_blocked(reason)
+                        # Play polite termination notice so there is no dead air
+                        notice = "I'm sorry, we cannot connect this call at this time. Goodbye."
+                        try:
+                            self._agent_speaking = True
+                            await self.turn_manager.on_agent_start_speaking()
+                            async for chunk in self.tts.stream_text(notice):
+                                if self.audio_sink:
+                                    await self.audio_sink(chunk)
+                        except Exception:
+                            pass
+                        finally:
+                            self._agent_speaking = False
+                            await self.turn_manager.on_agent_done_speaking()
                         return
                 except Exception as e:
                     logger.warning(f"Consent check failed, blocking outbound call for safety: {e}")
+                    if self.on_call_blocked:
+                        await self.on_call_blocked("consent_error")
                     return
             else:
                 logger.warning("Outbound call missing caller_phone in tenant_config — skipping consent check")
@@ -115,23 +149,25 @@ class VoiceOrchestrator:
         self._call_turns.append({'speaker': 'agent', 'text': greeting})
         self._messages.append({"role": "assistant", "content": greeting})
 
-        try:
-            self._agent_speaking = True
-            await self.turn_manager.on_agent_start_speaking()
-            async for chunk in self.tts.stream_text(greeting):
-                if self.audio_sink:
-                    await self.audio_sink(chunk)  # Forward audio bytes to Twilio gateway
-        except Exception as e:
-            logger.error(f"Failed to play greeting TTS: {e}")
-        finally:
-            self._agent_speaking = False
-            await self.turn_manager.on_agent_done_speaking()
-
+        async with self._tts_lock:
+            try:
+                self._agent_speaking = True
+                await self.turn_manager.on_agent_start_speaking()
+                async for chunk in self.tts.stream_text(greeting):
+                    if not self._agent_speaking:
+                        break
+                    if self.audio_sink:
+                        await self.audio_sink(chunk)  # Forward audio bytes to Twilio gateway
+            except Exception as e:
+                logger.error(f"Failed to play greeting TTS: {e}")
+            finally:
+                self._agent_speaking = False
+                await self.turn_manager.on_agent_done_speaking()
 
     async def _handle_turn(self, transcript: str) -> None:
         """
         Main per-turn processing pipeline. Runs RAG, updates memory, handles objections,
-        compiles prompt, streams LLM, and streams TTS.
+        executes tool calls, compiles prompt, streams LLM, and streams TTS.
         """
         async with self._turn_lock:
             # 1. Add caller turn
@@ -153,8 +189,15 @@ class VoiceOrchestrator:
                     if hasattr(self.retriever, 'retrieve'):
                         return await self.retriever.retrieve(transcript, tenant_id, bot_id, top_k=4)
                     elif hasattr(self.retriever, 'retrieve_with_fallback'):
-                        res = await self.retriever.retrieve_with_fallback(tenant_id, transcript, [], limit=4)
-                        return res.get('chunks', [])
+                        query_embedding = []
+                        if hasattr(self.provider, 'embed'):
+                            try:
+                                query_embedding = await self.provider.embed(transcript)
+                            except Exception as e:
+                                logger.warning(f"Could not compute embedding for RAG: {e}")
+                        res = await self.retriever.retrieve_with_fallback(tenant_id, transcript, query_embedding, limit=4)
+                        chunks = res.get('chunks', [])
+                        return [c["content"] if isinstance(c, dict) and "content" in c else str(c) for c in chunks]
                     return []
 
                 async def fetch_memory():
@@ -212,39 +255,106 @@ class VoiceOrchestrator:
             )
 
             # 5. Build messages list: [system prompt] + last 6 turns
-            messages_to_send = [{"role": "system", "content": system_prompt_text}]
+            messages_to_send: List[Dict[str, Any]] = [{"role": "system", "content": system_prompt_text}]
             messages_to_send.extend(self._messages[-6:])
 
-            # 6. Stream LLM response
-            full_response = ""
-            try:
-                self._agent_speaking = True
-                await self.turn_manager.on_agent_start_speaking()
+            # 6. Tool execution evaluation (Phase 2 tools: transfer, book, hours, lead)
+            tool_calls_executed = []
+            if self.tool_executor and hasattr(self.provider, 'tool_call'):
+                tool_triggers = [
+                    "transfer", "human", "agent", "person", "representative", "specialist", "someone else",
+                    "book", "schedule", "reschedule", "appointment", "meeting", "consultation", "calendar",
+                    "hour", "open", "close", "operating", "contact", "email", "phone"
+                ]
+                lower_t = transcript.lower()
+                should_evaluate_tools = any(term in lower_t for term in tool_triggers)
 
-                # Determine if provider supports stream
-                is_streaming = getattr(self.provider, 'supports_streaming', True) # Assumed True
-
-                async def token_generator():
-                    nonlocal full_response
+                if should_evaluate_tools:
                     try:
-                        # Assuming provider.generate with stream=True returns an async generator of tokens
-                        if is_streaming:
-                            response_gen = await self.provider.generate(
-                                messages=messages_to_send,
-                                model="gpt-5.6-luna",
-                                temperature=0.3,
-                                stream=True
-                            )
-                            # Handle both cases where it might return an async generator directly or a dict
-                            if hasattr(response_gen, '__aiter__'):
+                        tools_def = get_tools_definition(voice_mode=True)
+                        tc_res = await self.provider.tool_call(
+                            messages=messages_to_send,
+                            tools=tools_def,
+                            model="gpt-5.6-luna",
+                            temperature=0.2,
+                        )
+                        raw_tcs = tc_res.get("tool_calls", [])
+                        if raw_tcs:
+                            assistant_msg = tc_res.get("message")
+                            content_str = (getattr(assistant_msg, "content", "") or "") if assistant_msg else ""
+                            messages_to_send.append({"role": "assistant", "content": content_str, "tool_calls": raw_tcs})
+                            for tc in raw_tcs:
+                                fn_name = tc.function.name if hasattr(tc, "function") else tc.get("function", {}).get("name")
+                                fn_args_str = tc.function.arguments if hasattr(tc, "function") else tc.get("function", {}).get("arguments", "{}")
+                                try:
+                                    fn_args = json.loads(fn_args_str) if isinstance(fn_args_str, str) else (fn_args_str or {})
+                                except Exception:
+                                    fn_args = {}
+                                
+                                tool_result = await self.tool_executor.execute(fn_name, fn_args)
+                                tool_calls_executed.append((fn_name, tool_result))
+
+                                # Trigger specific callbacks
+                                if fn_name == "request_warm_transfer" and self.on_warm_transfer:
+                                    try:
+                                        await self.on_warm_transfer(tool_result)
+                                    except Exception as e:
+                                        logger.warning(f"on_warm_transfer callback failed: {e}")
+                                elif fn_name in ("book_appointment", "reschedule_appointment") and self.on_appointment_booked:
+                                    try:
+                                        await self.on_appointment_booked(tool_result)
+                                    except Exception as e:
+                                        logger.warning(f"on_appointment_booked callback failed: {e}")
+
+                                tc_id = getattr(tc, "id", None) or (tc.get("id") if isinstance(tc, dict) else "call_1")
+                                messages_to_send.append(ToolExecutor.build_tool_result_message(tc_id, tool_result))
+                    except Exception as e:
+                        logger.warning(f"Tool call evaluation failed: {e}")
+
+            # 7. Stream LLM response
+            full_response = ""
+            is_streaming = getattr(self.provider, 'supports_streaming', True)
+
+            async with self._tts_lock:
+                try:
+                    self._agent_speaking = True
+                    await self.turn_manager.on_agent_start_speaking()
+
+                    async def token_generator():
+                        nonlocal full_response
+                        try:
+                            # Primary: provider.stream()
+                            if hasattr(self.provider, 'stream') and is_streaming:
+                                response_gen = self.provider.stream(
+                                    messages=messages_to_send,
+                                    model="gpt-5.6-luna",
+                                    temperature=0.3
+                                )
                                 async for token in response_gen:
                                     full_response += token
                                     yield token
-                            else:
-                                text = response_gen.get("text", "")
-                                full_response = text
-                                yield text
-                        else:
+                                return
+
+                            # Secondary: provider.generate(stream=True)
+                            if is_streaming:
+                                response_gen = await self.provider.generate(
+                                    messages=messages_to_send,
+                                    model="gpt-5.6-luna",
+                                    temperature=0.3,
+                                    stream=True
+                                )
+                                if hasattr(response_gen, '__aiter__'):
+                                    async for token in response_gen:
+                                        full_response += token
+                                        yield token
+                                    return
+                                elif isinstance(response_gen, dict):
+                                    text = response_gen.get("text", "")
+                                    full_response = text
+                                    yield text
+                                    return
+                            
+                            # Fallback: non-streaming generate
                             response = await self.provider.generate(
                                 messages=messages_to_send,
                                 model="gpt-5.6-luna",
@@ -254,31 +364,38 @@ class VoiceOrchestrator:
                             text = response.get("text", "")
                             full_response = text
                             yield text
-                    except Exception as e:
-                        logger.error(f"LLM generation failed: {e}")
-                        fallback = "I'm sorry, I'm having trouble processing that right now."
-                        full_response = fallback
-                        yield fallback
+                        except Exception as e:
+                            logger.error(f"LLM generation failed: {e}")
+                            fallback = "I'm sorry, I'm having trouble processing that right now."
+                            full_response = fallback
+                            yield fallback
 
-                # 7. Feed LLM output through tts.stream_sentences() → audio_sink → Twilio gateway
-                async for audio_chunk in self.tts.stream_sentences(token_generator()):
-                    if not self._agent_speaking:
-                        logger.info("Barge-in interrupted TTS stream — stopping audio.")
-                        break
-                    if self.audio_sink:
-                        await self.audio_sink(audio_chunk)
+                    # Feed LLM output through tts.stream_sentences() → audio_sink → Twilio gateway
+                    async for audio_chunk in self.tts.stream_sentences(token_generator()):
+                        if not self._agent_speaking:
+                            logger.info("Barge-in interrupted TTS stream — stopping audio.")
+                            break
+                        if self.audio_sink:
+                            await self.audio_sink(audio_chunk)
 
-            except Exception as e:
-                logger.error(f"Error during turn processing: {e}")
-            finally:
-                self._agent_speaking = False
-                await self.turn_manager.on_agent_done_speaking()
+                except Exception as e:
+                    logger.error(f"Error during turn processing: {e}")
+                finally:
+                    self._agent_speaking = False
+                    await self.turn_manager.on_agent_done_speaking()
 
             # 8. Add agent turn
             if full_response:
                 self._call_turns.append({'speaker': 'agent', 'text': full_response})
                 # 9. Add to conversation history
                 self._messages.append({"role": "assistant", "content": full_response})
+
+            # Notify public hook if registered
+            if self.on_agent_turn and full_response:
+                try:
+                    await self.on_agent_turn(full_response)
+                except Exception as e:
+                    logger.warning(f"on_agent_turn callback error: {e}")
 
             # 10. Periodically compress
             if len(self._call_turns) > 8:
@@ -295,24 +412,39 @@ class VoiceOrchestrator:
         logger.info(f"Barge-in detected on call {self.session.call_id}")
         self.tts.cancel()
         self._agent_speaking = False
+        if self.on_barge_in:
+            try:
+                await self.on_barge_in()
+            except Exception as e:
+                logger.warning(f"on_barge_in hook failed: {e}")
 
     async def _handle_filler(self) -> None:
         """
-        Picks a random filler phrase and streams it via TTS immediately.
+        Picks a random filler phrase and streams it via TTS immediately,
+        guarding against overlapping speech with answer generation.
         """
+        if self._agent_speaking:
+            return
+
         filler = random.choice(VOICE_FILLER_PHRASES)
         logger.info(f"Injecting filler phrase: '{filler}'")
-        try:
-            self._agent_speaking = True
-            await self.turn_manager.on_agent_start_speaking()
-            async for chunk in self.tts.stream_text(filler):
-                if self.audio_sink:
-                    await self.audio_sink(chunk)
-        except Exception as e:
-            logger.error(f"Failed to play filler TTS: {e}")
-        finally:
-            self._agent_speaking = False
-            await self.turn_manager.on_agent_done_speaking()
+
+        async with self._tts_lock:
+            if self._agent_speaking:
+                return
+            try:
+                self._agent_speaking = True
+                await self.turn_manager.on_agent_start_speaking()
+                async for chunk in self.tts.stream_text(filler):
+                    if not self._agent_speaking:
+                        break
+                    if self.audio_sink:
+                        await self.audio_sink(chunk)
+            except Exception as e:
+                logger.error(f"Failed to play filler TTS: {e}")
+            finally:
+                self._agent_speaking = False
+                await self.turn_manager.on_agent_done_speaking()
 
     async def end_call(self) -> Dict[str, Any]:
         """

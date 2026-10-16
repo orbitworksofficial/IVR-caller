@@ -45,28 +45,7 @@ class StreamingProviderAdapter:
         return getattr(self._provider, name)
 
 
-class VoiceRetriever:
-    """
-    VoiceOrchestrator calls `retriever.retrieve(text, tenant_id, bot_id, top_k=)`
-    and otherwise falls back to retrieve_with_fallback() with an EMPTY embedding,
-    which the hybrid search RPC cannot use — calls would never be grounded.
-    This mirrors ChatPipeline.retrieve(): embed, then hybrid search with FTS
-    fallback, returning chunk text (the orchestrator str()s whatever it gets).
-    """
-
-    def __init__(self, provider: Any, retriever: Any):
-        self.provider = provider
-        self.retriever = retriever
-
-    async def retrieve(self, query: str, tenant_id: str, bot_id: str, top_k: int = 4) -> List[str]:
-        embedding = await self.provider.embed(query)
-        result = await self.retriever.retrieve_with_fallback(
-            tenant_id=tenant_id,
-            query_text=query,
-            query_embedding=embedding,
-            limit=top_k,
-        )
-        return [c["content"] for c in result.get("chunks", []) if c.get("content")]
+from ai.rag.retrieval import VoiceRetriever
 
 
 @dataclass
