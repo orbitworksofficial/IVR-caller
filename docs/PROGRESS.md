@@ -117,16 +117,23 @@ These need real accounts/keys and can't be done from code alone:
 - [x] Campaign runner: works through a campaign's call list on a schedule ✅ 2026-10-15
 
 **Phase 3: production hardening**
-- [ ] Copy recordings to Supabase Storage; per-tenant retention (`call_recordings.expires_at`)
-- [ ] Sentry + alerts: dropped calls, STT/TTS failures, latency SLO breaches
-- [ ] Rate limiting on the gateway; concurrency/scaling (more containers)
-- [ ] Campaign status counts are computed in Python (fine for hundreds of contacts). Move to a SQL count/RPC for large lists.
-- [ ] Per-call cost into `usage_events` (telephony/STT/TTS/LLM tokens)
-- [ ] Go live on the Orbit Works main number
+- [x] Spoken-output sanitization (`SpokenOutputFilter`): strips markdown/emojis, replaces raw URLs with conversational text, blocks ungrounded numeric claims (prices, percentages) ✅ 2026-11-02 (Hammad)
+- [x] Hard grounding & abstention: deterministic rejection of prompt injections, deterministic opt-out acknowledging before termination, deterministic abstention on factual queries lacking approved knowledge ✅ 2026-11-02 (Hammad)
+- [x] Mandatory AI disclosure on direct query ("are you a robot/AI?") ✅ 2026-11-02 (Hammad)
+- [ ] Copy recordings to Supabase Storage; per-tenant retention (`call_recordings.expires_at`) (Kashif)
+- [ ] Sentry + alerts: dropped calls, STT/TTS failures, latency SLO breaches (Kashif)
+- [ ] Rate limiting on the gateway; concurrency/scaling (more containers) (Kashif)
+- [ ] Campaign status counts are computed in Python (fine for hundreds of contacts). Move to a SQL count/RPC for large lists (Kashif)
+- [ ] Per-call cost into `usage_events` (telephony/STT/TTS/LLM tokens) (Kashif)
+- [ ] Go live on the Orbit Works main number (Kashif)
 
-**Phase 4: replication**
-- [ ] Admin UI: phone numbers, voice profiles, calling windows, consent config
-- [ ] Onboard a second test tenant onto voice with no code changes
+**Phase 4: replication & client onboarding**
+- [x] Tenant-specific script & objection override architecture (`VoiceScript`, `resolve_voice_script`, `build_objection_library`) ✅ 2026-11-02 (Hammad)
+- [x] Migration `20261016000013_voice_script_config.sql`: adds `ivr_bot_configs.voice_script` JSONB column for pure configuration-based onboarding ✅ 2026-11-02 (Hammad)
+- [x] Shared long-term memory linkage (`CallerHistoryLoader` linking caller phone to prior calls & lead profile) ✅ 2026-11-02 (Hammad)
+- [x] Documentation: [VOICE_REPLICATION.md](VOICE_REPLICATION.md) client onboarding runbook ✅ 2026-11-02 (Hammad)
+- [ ] Admin UI: phone numbers, voice profiles, calling windows, consent config (Kashif)
+- [ ] Onboard a second test tenant onto voice with no code changes (Kashif / Usman)
 
 ---
 
@@ -134,6 +141,7 @@ These need real accounts/keys and can't be done from code alone:
 
 | Date | Who | What |
 |---|---|---|
+| 2026-11-02 | Hammad | Implemented Phase 3 & 4 AI deliverables: `VoiceGuardrails` & `SpokenOutputFilter` (preventing prompt injections, hallucinated figures, URL reads, and enforcing AI disclosure), `VoiceScript` & `resolve_voice_script` for tenant-driven dialogue and dynamic objection libraries, migration `0013_voice_script_config.sql`, `CallerHistoryLoader` for shared memory, `docs/VOICE_REPLICATION.md`, and comprehensive test suite `tests/test_voice_hardening.py` (all 152 voice tests passing). |
 | 2026-10-16 | Hammad | Reviewed and fixed Phase 1 & 2 issues H1–H11: native streaming in orchestrator/OpenAI provider, VoiceRetriever in `ai/rag/retrieval.py`, public hooks and TTS lock, tool calling in `_handle_turn` for warm transfer and Calendly booking, ISO timestamps in `_log_disposition`, latency cache prefetch methods, regression tests (138 passing voice tests) |
 | 2026-10-15 | Kashif | Campaign runner (Phase 2): `campaign_contacts` queue + migration 0012, background runner with concurrency limit, retry/exhaust/block handling and safe multi-instance claims, campaign CLI, 15 tests (135/135 voice tests pass) |
 | 2026-10-15 | Kashif | Outbound calling (Phase 2): fail-closed dial policy (consent/DNC/window/attempts/retry), Twilio dialer with AMD + voicemail, dial API, verbal opt-out → DNC, consent CLI, migration 0011, 40 tests (120/120 voice tests pass). Logged H9–H11 for Hammad |

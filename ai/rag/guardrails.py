@@ -13,6 +13,7 @@ INJECTION_PATTERNS = [
     r"forget\s+(everything|all)\s+(you\s+)?(were\s+)?told",
     r"new\s+instructions?\s*:",
     r"override\s+(your\s+)?(previous\s+)?(instructions?|rules?|prompt)",
+    r"system\s+prompt\s+override",
     # System prompt extraction
     r"(reveal|show|print|output|repeat|tell me)\s+(your\s+)?(system\s+prompt|instructions?|rules?|configuration)",
     r"what\s+(are\s+your|is\s+your)\s+(system\s+|hidden\s+)?(prompt|instructions?|rules?)",
