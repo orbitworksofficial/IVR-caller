@@ -30,13 +30,14 @@ ROLE_PERMISSIONS: Dict[str, set] = {
         "view_leads", "view_conversations", "view_handoffs", "resolve_handoffs",
         "view_knowledge", "manage_knowledge",
         "view_bots", "manage_bots", "manage_domains", "manage_branding",
+        "view_voice", "manage_voice",
     },
     "client": {
         "view_leads", "view_conversations", "view_handoffs", "resolve_handoffs",
         "view_knowledge", "manage_knowledge",
-        # Deliberately excluded: manage_bots, manage_domains, manage_branding.
-        # A client may see their bot's settings but not change them.
-        "view_bots",
+        # Deliberately excluded: manage_bots, manage_domains, manage_branding, manage_voice.
+        # A client may see their bot's settings and call history, and manage consent/DNC.
+        "view_bots", "view_voice",
     },
 }
 

@@ -18,6 +18,7 @@ from apps.api.security import (
 from apps.api.chat_service import ChatPipeline
 from apps.api.admin_routes import router as admin_router
 from apps.api.superadmin_routes import router as superadmin_router
+from apps.api.voice_admin_routes import router as voice_admin_router
 from ai.providers.openai import OpenAIProvider
 from ai.rag.retrieval import SecurityEnforcedRetrieval
 from ai.rag.guardrails import GroundingGuardrails
@@ -40,12 +41,13 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
 app.include_router(admin_router)
 app.include_router(superadmin_router)
+app.include_router(voice_admin_router)
 
 
 # ── Widget bundle ────────────────────────────────────────────────────────────

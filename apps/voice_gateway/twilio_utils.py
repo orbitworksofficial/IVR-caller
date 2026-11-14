@@ -189,3 +189,83 @@ async def transfer_call(call_sid: str, to_number: str, message: Optional[str] = 
         logger.error(f"Twilio warm transfer error for call {call_sid}: {e}")
         return False
 
+
+async def download_recording(recording_url: str, ext: str = ".mp3") -> Optional[bytes]:
+    """
+    Downloads recording audio from Twilio so it can be archived to Supabase
+    Storage under tenant-scoped access control (Phase 3).
+    """
+    account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
+    token = auth_token()
+    if not recording_url or not account_sid or not token:
+        return None
+
+    target_url = recording_url
+    if not target_url.endswith((".mp3", ".wav")):
+        target_url = f"{target_url}{ext}"
+
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            resp = await client.get(target_url, auth=(account_sid, token))
+        if resp.status_code >= 300:
+            logger.warning(f"Twilio recording download returned {resp.status_code} for {target_url}")
+            return None
+        return resp.content
+    except Exception as e:
+        logger.warning(f"Twilio recording download failed for {target_url}: {e}")
+        return None
+
+
+async def configure_number_webhooks(
+    phone_number: str,
+    inbound_url: Optional[str] = None,
+    status_url: Optional[str] = None,
+) -> Optional[Dict[str, str]]:
+    """
+    Looks up `phone_number` (E.164) in the Twilio account's IncomingPhoneNumbers
+    and sets its VoiceUrl (/voice/inbound) and StatusCallback (/voice/status).
+    Returns {"sid": ..., "voice_url": ..., "status_callback": ...} on success, or None.
+    """
+    account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
+    token = auth_token()
+    base = public_base_url()
+    v_url = inbound_url or (f"{base}/voice/inbound" if base else "")
+    s_url = status_url or (f"{base}/voice/status" if base else "")
+
+    if not account_sid or not token or not v_url:
+        logger.info("Skipping Twilio webhook auto-configuration (missing credentials or VOICE_PUBLIC_BASE_URL).")
+        return None
+
+    list_url = f"{TWILIO_API_BASE}/Accounts/{account_sid}/IncomingPhoneNumbers.json"
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            lookup = await client.get(
+                list_url, params={"PhoneNumber": phone_number}, auth=(account_sid, token)
+            )
+            if lookup.status_code >= 300:
+                logger.warning(f"Twilio IncomingPhoneNumbers lookup failed ({lookup.status_code}): {lookup.text}")
+                return None
+            items = lookup.json().get("incoming_phone_numbers") or []
+            if not items:
+                logger.warning(f"Phone number {phone_number} not found in Twilio IncomingPhoneNumbers.")
+                return None
+
+            pn_sid = items[0]["sid"]
+            update_url = f"{TWILIO_API_BASE}/Accounts/{account_sid}/IncomingPhoneNumbers/{pn_sid}.json"
+            payload = {
+                "VoiceUrl": v_url,
+                "VoiceMethod": "POST",
+                "StatusCallback": s_url,
+                "StatusCallbackMethod": "POST",
+            }
+            upd = await client.post(update_url, data=payload, auth=(account_sid, token))
+            if upd.status_code >= 300:
+                logger.warning(f"Twilio webhook update failed ({upd.status_code}): {upd.text}")
+                return None
+            logger.info(f"Configured Twilio webhooks for {phone_number} ({pn_sid}) -> {v_url}")
+            return {"sid": pn_sid, "voice_url": v_url, "status_callback": s_url}
+    except Exception as e:
+        logger.warning(f"Twilio webhook auto-configuration error for {phone_number}: {e}")
+        return None
+
+

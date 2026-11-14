@@ -12,6 +12,7 @@ Writes (idempotently):
 The Twilio side is configured separately in the console — see docs/VOICE_GATEWAY.md.
 """
 
+import asyncio
 import os
 import sys
 import argparse
@@ -22,6 +23,7 @@ import dotenv
 dotenv.load_dotenv()
 
 from supabase import create_client
+from apps.voice_gateway import twilio_utils
 
 
 def main() -> int:
@@ -33,6 +35,8 @@ def main() -> int:
                         help="Defaults to TEST_BOT_ID from .env")
     parser.add_argument("--voice-id", help="ElevenLabs voice id for this bot")
     parser.add_argument("--no-recording", action="store_true", help="Disable call recording for this bot")
+    parser.add_argument("--skip-twilio-webhooks", action="store_true",
+                        help="Do not auto-configure Twilio VoiceUrl/StatusCallback via REST API")
     args = parser.parse_args()
 
     if not args.number.startswith("+"):
@@ -79,6 +83,14 @@ def main() -> int:
         db.table("ivr_bot_configs").upsert(cfg, on_conflict="tenant_id,bot_id").execute()
 
     print(f"OK: {args.number} → bot '{bot.data[0]['name']}' ({args.bot_id}), tenant {args.tenant_id}")
+
+    if not args.skip_twilio_webhooks:
+        wh = asyncio.run(twilio_utils.configure_number_webhooks(args.number))
+        if wh:
+            print(f"OK: Twilio webhooks configured ({wh['sid']}): VoiceUrl={wh['voice_url']}")
+        else:
+            print("INFO: Twilio webhook auto-config skipped or number not yet in Twilio account.")
+
     return 0
 
 

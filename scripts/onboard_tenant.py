@@ -25,6 +25,7 @@ Usage:
 
 import os
 import sys
+import json
 import asyncio
 import argparse
 import dotenv
@@ -36,6 +37,8 @@ dotenv.load_dotenv()
 from supabase import create_client
 from ai.providers.openai import OpenAIProvider
 from ai.evaluations.knowledge_health import KnowledgeHealthChecker
+from ai.prompts.voice.script_config import validate_voice_script
+from apps.voice_gateway import twilio_utils
 from workers.ingestion.pipeline import KnowledgeIngestionPipeline
 
 
@@ -150,6 +153,45 @@ async def onboard(args):
         {"status": "processed"}
     ).eq("id", document_id).execute()
 
+    # ── Step 4b (Optional): Voice & IVR Configuration ────────────────────────
+    if args.phone_number or args.voice_id or args.voice_script_file:
+        print("\n[4b/5] Configuring Voice & IVR settings...")
+        phone_number_id = None
+        if args.phone_number:
+            pn_resp = supabase.table("phone_numbers").upsert({
+                "tenant_id": tenant_id,
+                "bot_id": bot_id,
+                "phone_number": args.phone_number,
+                "direction": "both",
+                "is_active": True,
+            }, on_conflict="tenant_id,phone_number").execute()
+            phone_number_id = pn_resp.data[0]["id"] if pn_resp.data else None
+            print(f"  ✅ Mapped phone number: {args.phone_number}")
+            await twilio_utils.configure_number_webhooks(args.phone_number)
+
+        voice_script = {}
+        if args.voice_script_file:
+            with open(args.voice_script_file, "r", encoding="utf-8") as vf:
+                voice_script = json.load(vf)
+            ok, errs = validate_voice_script(voice_script)
+            if not ok or errs:
+                print(f"  ❌ Invalid voice script JSON: {errs}")
+                sys.exit(1)
+
+        ivr_cfg = {
+            "tenant_id": tenant_id,
+            "bot_id": bot_id,
+            "phone_number_id": phone_number_id,
+            "calling_timezone": args.calling_timezone,
+            "calling_window_start": args.calling_window_start,
+            "calling_window_end": args.calling_window_end,
+            "voice_script": voice_script,
+        }
+        if args.voice_id:
+            ivr_cfg["voice_id"] = args.voice_id
+        supabase.table("ivr_bot_configs").upsert(ivr_cfg, on_conflict="tenant_id,bot_id").execute()
+        print("  ✅ Saved ivr_bot_configs record.")
+
     # ── Step 5: Knowledge health check ───────────────────────────────────────
     print("\n[5/5] Running knowledge health check...")
     checker = KnowledgeHealthChecker(supabase_client=supabase)
@@ -193,6 +235,13 @@ def main():
     parser.add_argument("--restrict-topics", nargs="*", help="Topics the bot must not discuss")
     parser.add_argument("--sales-only", action="store_true", help="Disable support mode")
     parser.add_argument("--support-only", action="store_true", help="Disable sales mode")
+    # Phase 4 Voice & IVR arguments
+    parser.add_argument("--phone-number", help="E.164 Twilio phone number to assign to this bot")
+    parser.add_argument("--voice-id", help="ElevenLabs voice ID for this bot")
+    parser.add_argument("--calling-timezone", default="America/New_York", help="IANA timezone for outbound calling window")
+    parser.add_argument("--calling-window-start", default="09:00:00", help="Outbound calling window start (HH:MM:SS)")
+    parser.add_argument("--calling-window-end", default="18:00:00", help="Outbound calling window end (HH:MM:SS)")
+    parser.add_argument("--voice-script-file", help="Path to JSON file with tenant voice_script overrides")
     args = parser.parse_args()
     asyncio.run(onboard(args))
 
