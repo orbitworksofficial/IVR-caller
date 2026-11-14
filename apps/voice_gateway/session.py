@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 ULAW_BYTES_PER_SECOND = 8000
 END_CALL_TIMEOUT_S = 30
+MAX_AUDIO_IN_CHUNKS = 500  # ~10s of 20ms chunks; prevents unbounded memory growth if STT stalls
 
 
 class CallSession:
@@ -52,7 +53,7 @@ class CallSession:
 
         self._send_lock = asyncio.Lock()
         self._encoder = PCMToUlawStream()
-        self._audio_in: "asyncio.Queue[Optional[bytes]]" = asyncio.Queue()
+        self._audio_in: "asyncio.Queue[Optional[bytes]]" = asyncio.Queue(maxsize=MAX_AUDIO_IN_CHUNKS)
         self._tasks: List[asyncio.Task] = []
         self._started_at = time.monotonic()
         self._inbound_bytes = 0
@@ -79,7 +80,14 @@ class CallSession:
     async def run(self) -> None:
         try:
             while True:
-                msg = json.loads(await self.ws.receive_text())
+                raw = await self.ws.receive_text()
+                try:
+                    msg = json.loads(raw)
+                except Exception:
+                    logger.warning(f"Ignored malformed WebSocket JSON on call {self._call_id}")
+                    continue
+                if not isinstance(msg, dict):
+                    continue
                 event = msg.get("event")
                 if event == "start":
                     if not await self._on_start(msg):
@@ -148,11 +156,24 @@ class CallSession:
         if not self.c:
             return
         media = msg.get("media", {})
-        if media.get("track", "inbound") != "inbound":
+        if not isinstance(media, dict) or media.get("track", "inbound") != "inbound":
             return
-        ulaw = base64.b64decode(media.get("payload", ""))
+        try:
+            ulaw = base64.b64decode(media.get("payload", ""), validate=False)
+        except Exception:
+            return
+        if not ulaw:
+            return
         self._inbound_bytes += len(ulaw)
-        self._audio_in.put_nowait(ulaw)
+        if self._audio_in.full():
+            try:
+                self._audio_in.get_nowait()  # drop oldest frame if STT is stalled
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            self._audio_in.put_nowait(ulaw)
+        except asyncio.QueueFull:
+            pass
         await self.c.turn_manager.on_audio_chunk(ulaw_to_pcm16(ulaw))
 
     # ── Pipeline tasks ────────────────────────────────────────────────────────
@@ -291,7 +312,15 @@ class CallSession:
     # ── Teardown ──────────────────────────────────────────────────────────────
 
     async def _shutdown(self) -> None:
-        self._audio_in.put_nowait(None)
+        if self._audio_in.full():
+            try:
+                self._audio_in.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            self._audio_in.put_nowait(None)
+        except asyncio.QueueFull:
+            pass
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)

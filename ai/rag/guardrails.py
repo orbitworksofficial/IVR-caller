@@ -251,4 +251,13 @@ class GroundingGuardrails:
             if not has_any:
                 return False, "save_contact_details requires at least one contact field."
 
+        elif tool_name == "book_appointment":
+            email = args.get("contact_email") or args.get("email")
+            if email and not re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", str(email)):
+                return False, "book_appointment requires a valid contact_email."
+
+        elif tool_name == "request_warm_transfer":
+            if not args.get("reason"):
+                return False, "request_warm_transfer requires a reason."
+
         return True, ""

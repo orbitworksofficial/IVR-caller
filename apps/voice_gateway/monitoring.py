@@ -185,14 +185,23 @@ class VoiceMonitor:
 class SlidingWindowRateLimiter:
     """In-memory per-key sliding window rate limiter for Voice Gateway endpoints."""
 
-    def __init__(self, max_requests: int = 60, window_seconds: float = 60.0):
+    def __init__(self, max_requests: int = 60, window_seconds: float = 60.0, max_keys: int = 10000):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
+        self.max_keys = max_keys
         self._hits: Dict[str, Deque[float]] = collections.defaultdict(collections.deque)
 
     def allow(self, key: str, now: Optional[float] = None) -> bool:
         t = now if now is not None else time.monotonic()
         cutoff = t - self.window_seconds
+        if len(self._hits) > self.max_keys and key not in self._hits:
+            stale = [k for k, dq in self._hits.items() if not dq or dq[-1] <= cutoff]
+            for k in stale:
+                self._hits.pop(k, None)
+            if len(self._hits) >= self.max_keys:
+                # Evict oldest key if still at capacity
+                oldest_k = next(iter(self._hits))
+                self._hits.pop(oldest_k, None)
         q = self._hits[key]
         while q and q[0] <= cutoff:
             q.popleft()
