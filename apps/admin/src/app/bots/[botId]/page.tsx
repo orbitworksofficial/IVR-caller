@@ -10,9 +10,9 @@ import {
 import { IconBack, IconTrash, IconPlus, IconGlobe } from "@/components/Icons";
 import { EmbedSnippet } from "@/components/EmbedSnippet";
 import { api, ApiError } from "@/lib/api";
-import type { Bot, BotDomain, Admin } from "@/lib/types";
+import type { Bot, BotDomain, Admin, IvrBotConfig, PhoneNumber, VoiceProfile } from "@/lib/types";
 
-type Tab = "behavior" | "branding" | "domains" | "embed";
+type Tab = "behavior" | "voice" | "branding" | "domains" | "embed";
 
 export default function BotDetailPage({
   params,
@@ -143,6 +143,7 @@ export default function BotDetailPage({
       <div className="tabs">
         {([
           ["behavior", "Behavior"],
+          ["voice", "Voice & IVR"],
           ["branding", "Branding"],
           ["domains", "Domains"],
           ["embed", "Embed"],
@@ -160,6 +161,7 @@ export default function BotDetailPage({
       {tab === "behavior" && (
         <BehaviorTab form={form} update={update} onArchive={archive} canEdit={canEdit} />
       )}
+      {tab === "voice" && <VoiceTab botId={botId} canEdit={canEdit} />}
       {tab === "branding" && <BrandingTab form={form} update={update} canEdit={canEdit} />}
       {tab === "domains" && (
         <DomainsTab botId={botId} domains={domains} setDomains={setDomains} canEdit={canEdit} />
@@ -611,6 +613,292 @@ function DomainsTab({
           <code>*.example.com</code> matches every subdomain and the apex domain.
           Requests from <code>localhost</code> are always allowed for development.
         </p>
+      </div>
+    </div>
+  );
+}
+
+// ── Voice & IVR ──────────────────────────────────────────────────────────────
+
+function VoiceTab({ botId, canEdit }: { botId: string; canEdit: boolean }) {
+  const [cfg, setCfg] = useState<Partial<IvrBotConfig>>({});
+  const [numbers, setNumbers] = useState<PhoneNumber[]>([]);
+  const [profiles, setProfiles] = useState<VoiceProfile[]>([]);
+  const [scriptJson, setScriptJson] = useState("{}");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    Promise.all([
+      api.getBotVoiceConfig(botId),
+      api.listPhoneNumbers(),
+      api.listVoiceProfiles(),
+    ])
+      .then(([configData, numList, profList]) => {
+        setCfg(configData);
+        setNumbers(numList);
+        setProfiles(profList);
+        setScriptJson(JSON.stringify(configData.voice_script || {}, null, 2));
+      })
+      .catch((e: ApiError) => setError(e.message))
+      .finally(() => setLoading(false));
+  }, [botId]);
+
+  function setField<K extends keyof IvrBotConfig>(k: K, v: IvrBotConfig[K]) {
+    setCfg((prev) => ({ ...prev, [k]: v }));
+    setSaved(false);
+  }
+
+  async function saveVoiceConfig() {
+    setError(null);
+    let parsedScript: Record<string, unknown> = {};
+    try {
+      parsedScript = scriptJson.trim() ? JSON.parse(scriptJson) : {};
+    } catch {
+      setError("Voice script must be valid JSON.");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const updated = await api.updateBotVoiceConfig(botId, {
+        phone_number_id: cfg.phone_number_id || null,
+        voice_profile_id: cfg.voice_profile_id || null,
+        voice_id: cfg.voice_id || null,
+        stt_model: cfg.stt_model || "nova-2-phonecall",
+        stt_endpointing_ms: Number(cfg.stt_endpointing_ms ?? 300),
+        call_recording_enabled: cfg.call_recording_enabled ?? true,
+        recording_disclosure_text: cfg.recording_disclosure_text,
+        recording_retention_days: Number(cfg.recording_retention_days ?? 90),
+        calling_window_start: cfg.calling_window_start || "09:00:00",
+        calling_window_end: cfg.calling_window_end || "18:00:00",
+        calling_timezone: cfg.calling_timezone || "America/New_York",
+        max_call_attempts: Number(cfg.max_call_attempts ?? 3),
+        retry_interval_hours: Number(cfg.retry_interval_hours ?? 24),
+        voicemail_message: cfg.voicemail_message || null,
+        abstain_phrase: cfg.abstain_phrase || null,
+        filler_phrase: cfg.filler_phrase || null,
+        voice_script: parsedScript,
+      });
+      setCfg(updated);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (e) {
+      setError((e as ApiError).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (loading) {
+    return <LoadingState label="Loading voice & IVR configuration…" />;
+  }
+
+  return (
+    <div className="grid grid-2">
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <div className="card-title">Telephony &amp; Voice</div>
+            <div className="card-desc">Phone number, ElevenLabs TTS voice, and Deepgram STT.</div>
+          </div>
+        </div>
+        <div className="card-body">
+          {error && <Alert kind="error">{error}</Alert>}
+          {saved && <Alert kind="success">Voice &amp; IVR configuration saved.</Alert>}
+
+          <div className="field">
+            <label className="label">Assigned phone number</label>
+            <select
+              className="select"
+              disabled={!canEdit}
+              value={cfg.phone_number_id ?? ""}
+              onChange={(e) => setField("phone_number_id", e.target.value || null)}
+            >
+              <option value="">None assigned</option>
+              {numbers.map((n) => (
+                <option key={n.id} value={n.id}>
+                  {n.phone_number} ({n.direction})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="field">
+            <label className="label">Voice profile</label>
+            <select
+              className="select"
+              disabled={!canEdit}
+              value={cfg.voice_profile_id ?? ""}
+              onChange={(e) => setField("voice_profile_id", e.target.value || null)}
+            >
+              <option value="">Default / custom voice ID below</option>
+              {profiles.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name} ({p.voice_id})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="field">
+            <label className="label">ElevenLabs Voice ID override</label>
+            <input
+              className="input"
+              disabled={!canEdit}
+              value={cfg.voice_id ?? ""}
+              onChange={(e) => setField("voice_id", e.target.value)}
+              placeholder="21m00Tcm4TlvDq8ikWAM"
+            />
+          </div>
+
+          <div className="field">
+            <label className="label">Deepgram STT Endpointing (ms)</label>
+            <input
+              className="input"
+              type="number"
+              disabled={!canEdit}
+              value={cfg.stt_endpointing_ms ?? 300}
+              onChange={(e) => setField("stt_endpointing_ms", Number(e.target.value))}
+            />
+          </div>
+
+          <label className="checkbox-row">
+            <input
+              type="checkbox"
+              disabled={!canEdit}
+              checked={cfg.call_recording_enabled ?? true}
+              onChange={(e) => setField("call_recording_enabled", e.target.checked)}
+            />
+            <div>
+              <div className="checkbox-label">Enable call recording</div>
+              <div className="checkbox-desc">
+                Plays recording disclosure before the greeting and records dual-channel audio.
+              </div>
+            </div>
+          </label>
+
+          <div className="field" style={{ marginTop: 12 }}>
+            <label className="label">Recording disclosure text</label>
+            <input
+              className="input"
+              disabled={!canEdit}
+              value={cfg.recording_disclosure_text ?? ""}
+              onChange={(e) => setField("recording_disclosure_text", e.target.value)}
+            />
+          </div>
+
+          <div className="field">
+            <label className="label">Recording retention (days)</label>
+            <input
+              className="input"
+              type="number"
+              disabled={!canEdit}
+              value={cfg.recording_retention_days ?? 90}
+              onChange={(e) => setField("recording_retention_days", Number(e.target.value))}
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <div className="card-title">Calling Window, Voicemail &amp; Script</div>
+            <div className="card-desc">Outbound compliance limits and tenant voice script JSON.</div>
+          </div>
+        </div>
+        <div className="card-body">
+          <div className="field">
+            <label className="label">Calling timezone (IANA)</label>
+            <input
+              className="input"
+              disabled={!canEdit}
+              value={cfg.calling_timezone ?? "America/New_York"}
+              onChange={(e) => setField("calling_timezone", e.target.value)}
+              placeholder="America/New_York"
+            />
+          </div>
+
+          <div style={{ display: "flex", gap: 12 }}>
+            <div className="field" style={{ flex: 1 }}>
+              <label className="label">Window start</label>
+              <input
+                className="input"
+                disabled={!canEdit}
+                value={cfg.calling_window_start ?? "09:00:00"}
+                onChange={(e) => setField("calling_window_start", e.target.value)}
+              />
+            </div>
+            <div className="field" style={{ flex: 1 }}>
+              <label className="label">Window end</label>
+              <input
+                className="input"
+                disabled={!canEdit}
+                value={cfg.calling_window_end ?? "18:00:00"}
+                onChange={(e) => setField("calling_window_end", e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div style={{ display: "flex", gap: 12 }}>
+            <div className="field" style={{ flex: 1 }}>
+              <label className="label">Max dial attempts</label>
+              <input
+                className="input"
+                type="number"
+                disabled={!canEdit}
+                value={cfg.max_call_attempts ?? 3}
+                onChange={(e) => setField("max_call_attempts", Number(e.target.value))}
+              />
+            </div>
+            <div className="field" style={{ flex: 1 }}>
+              <label className="label">Retry interval (hours)</label>
+              <input
+                className="input"
+                type="number"
+                disabled={!canEdit}
+                value={cfg.retry_interval_hours ?? 24}
+                onChange={(e) => setField("retry_interval_hours", Number(e.target.value))}
+              />
+            </div>
+          </div>
+
+          <div className="field">
+            <label className="label">Approved voicemail message (AMD)</label>
+            <textarea
+              className="textarea"
+              disabled={!canEdit}
+              value={cfg.voicemail_message ?? ""}
+              onChange={(e) => setField("voicemail_message", e.target.value)}
+              placeholder="Hi, this is Orbit Works following up on your inquiry…"
+            />
+          </div>
+
+          <div className="field">
+            <label className="label">Tenant Voice Script (JSONB)</label>
+            <textarea
+              className="textarea"
+              disabled={!canEdit}
+              style={{ fontFamily: "monospace", minHeight: 110 }}
+              value={scriptJson}
+              onChange={(e) => setScriptJson(e.target.value)}
+            />
+            <p className="hint">
+              Supports <code>inbound_greeting</code>, <code>outbound_greeting</code>,{" "}
+              <code>abstain_phrase</code>, <code>filler_phrase</code>, <code>objections</code>,{" "}
+              and <code>extra_rules</code>.
+            </p>
+          </div>
+
+          {canEdit && (
+            <button className="btn btn-primary" onClick={saveVoiceConfig} disabled={saving}>
+              {saving ? <><Spinner /> Saving voice config…</> : "Save voice settings"}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

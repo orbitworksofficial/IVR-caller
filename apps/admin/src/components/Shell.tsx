@@ -7,7 +7,7 @@ import { createClient } from "@/lib/supabase";
 import { api } from "@/lib/api";
 import {
   IconHome, IconBot, IconBook, IconChat, IconUsers,
-  IconHandoff, IconCode, IconMenu, IconGlobe,
+  IconHandoff, IconCode, IconMenu, IconGlobe, IconPhone,
 } from "./Icons";
 import { TenantSwitcher } from "./TenantSwitcher";
 import type { Admin } from "@/lib/types";
@@ -15,6 +15,7 @@ import type { Admin } from "@/lib/types";
 const NAV = [
   { href: "/",              label: "Overview",      icon: IconHome },
   { href: "/bots",          label: "Bots",          icon: IconBot },
+  { href: "/calls",         label: "Voice & Calls", icon: IconPhone },
   { href: "/knowledge",     label: "Knowledge",     icon: IconBook },
   { href: "/conversations", label: "Conversations", icon: IconChat },
   { href: "/leads",         label: "Leads",         icon: IconUsers },

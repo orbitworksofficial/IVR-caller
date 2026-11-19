@@ -20,6 +20,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from apps.voice_gateway.audio import PCMToUlawStream, ulaw_to_pcm16
 from apps.voice_gateway.call_store import CallStore
 from apps.voice_gateway.components import CallComponents, ComponentsFactory
+from apps.voice_gateway.monitoring import VoiceMonitor
 from apps.voice_gateway.opt_out import is_opt_out
 from apps.voice_gateway import twilio_utils
 
@@ -27,13 +28,23 @@ logger = logging.getLogger(__name__)
 
 ULAW_BYTES_PER_SECOND = 8000
 END_CALL_TIMEOUT_S = 30
+MAX_AUDIO_IN_CHUNKS = 500  # ~10s of 20ms chunks; prevents unbounded memory growth if STT stalls
 
 
 class CallSession:
-    def __init__(self, ws: WebSocket, store: CallStore, factory: ComponentsFactory):
+    def __init__(
+        self,
+        ws: WebSocket,
+        store: CallStore,
+        factory: ComponentsFactory,
+        monitor: Optional[VoiceMonitor] = None,
+    ):
         self.ws = ws
         self.store = store
         self.factory = factory
+        self.monitor = monitor
+        self._stream_stopped_cleanly = False
+        self._drop_reason = ""
 
         self.call: Optional[Dict[str, Any]] = None
         self.stream_sid: Optional[str] = None
@@ -42,7 +53,7 @@ class CallSession:
 
         self._send_lock = asyncio.Lock()
         self._encoder = PCMToUlawStream()
-        self._audio_in: "asyncio.Queue[Optional[bytes]]" = asyncio.Queue()
+        self._audio_in: "asyncio.Queue[Optional[bytes]]" = asyncio.Queue(maxsize=MAX_AUDIO_IN_CHUNKS)
         self._tasks: List[asyncio.Task] = []
         self._started_at = time.monotonic()
         self._inbound_bytes = 0
@@ -69,21 +80,32 @@ class CallSession:
     async def run(self) -> None:
         try:
             while True:
-                msg = json.loads(await self.ws.receive_text())
+                raw = await self.ws.receive_text()
+                try:
+                    msg = json.loads(raw)
+                except Exception:
+                    logger.warning(f"Ignored malformed WebSocket JSON on call {self._call_id}")
+                    continue
+                if not isinstance(msg, dict):
+                    continue
                 event = msg.get("event")
                 if event == "start":
                     if not await self._on_start(msg):
+                        self._stream_stopped_cleanly = True
                         await self.ws.close(code=1008)
                         return
                 elif event == "media":
                     await self._on_media(msg)
                 elif event == "stop":
+                    self._stream_stopped_cleanly = True
                     logger.info(f"Stream stopped for call {self._call_id}")
                     break
                 # "connected", "mark" and "dtmf" need no action in Phase 1.
         except WebSocketDisconnect:
+            self._drop_reason = "websocket_disconnect"
             logger.info(f"Twilio WebSocket disconnected for call {self._call_id}")
         except Exception as e:
+            self._drop_reason = str(e)
             logger.exception(f"Voice session error on call {self._call_id}: {e}")
         finally:
             await self._shutdown()
@@ -115,6 +137,8 @@ class CallSession:
 
         self.c = await self.factory(self.call, self.store, self._send_audio)
         self._hook_orchestrator()
+        if self.monitor:
+            self.monitor.call_started(call_id, str(self.call["tenant_id"]))
 
         self._tasks.append(asyncio.create_task(self._stt_loop()))
         self._tasks.append(asyncio.create_task(self._open_call()))
@@ -132,11 +156,24 @@ class CallSession:
         if not self.c:
             return
         media = msg.get("media", {})
-        if media.get("track", "inbound") != "inbound":
+        if not isinstance(media, dict) or media.get("track", "inbound") != "inbound":
             return
-        ulaw = base64.b64decode(media.get("payload", ""))
+        try:
+            ulaw = base64.b64decode(media.get("payload", ""), validate=False)
+        except Exception:
+            return
+        if not ulaw:
+            return
         self._inbound_bytes += len(ulaw)
-        self._audio_in.put_nowait(ulaw)
+        if self._audio_in.full():
+            try:
+                self._audio_in.get_nowait()  # drop oldest frame if STT is stalled
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            self._audio_in.put_nowait(ulaw)
+        except asyncio.QueueFull:
+            pass
         await self.c.turn_manager.on_audio_chunk(ulaw_to_pcm16(ulaw))
 
     # ── Pipeline tasks ────────────────────────────────────────────────────────
@@ -152,6 +189,8 @@ class CallSession:
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            if self.monitor:
+                self.monitor.record_tts_failure(self._call_id, str(e))
             logger.exception(f"Failed to open call {self._call_id}: {e}")
 
     async def _caller_audio(self):
@@ -179,6 +218,8 @@ class CallSession:
         except asyncio.CancelledError:
             raise
         except Exception as e:
+            if self.monitor:
+                self.monitor.record_stt_failure(self._call_id, str(e))
             logger.exception(f"STT loop failed on call {self._call_id}: {e}")
 
     async def _record_opt_out(self, transcript: str) -> None:
@@ -244,6 +285,8 @@ class CallSession:
         if self._turn_started_at is not None and self._pending_latency is None:
             self._pending_latency = int((now - self._turn_started_at) * 1000)
             logger.info(f"Call {self._call_id} turn latency: {self._pending_latency} ms")
+            if self.monitor:
+                self.monitor.record_turn_latency(self._call_id, self._pending_latency)
 
         await self._send({
             "event": "media",
@@ -269,7 +312,15 @@ class CallSession:
     # ── Teardown ──────────────────────────────────────────────────────────────
 
     async def _shutdown(self) -> None:
-        self._audio_in.put_nowait(None)
+        if self._audio_in.full():
+            try:
+                self._audio_in.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            self._audio_in.put_nowait(None)
+        except asyncio.QueueFull:
+            pass
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
@@ -277,6 +328,10 @@ class CallSession:
 
         if not (self.call and self.c):
             return
+
+        if self.monitor:
+            dropped = not self._stream_stopped_cleanly
+            self.monitor.call_ended(self._call_id, dropped=dropped, reason=self._drop_reason)
 
         summary: Dict[str, Any] = {}
         try:

@@ -13,6 +13,7 @@ INJECTION_PATTERNS = [
     r"forget\s+(everything|all)\s+(you\s+)?(were\s+)?told",
     r"new\s+instructions?\s*:",
     r"override\s+(your\s+)?(previous\s+)?(instructions?|rules?|prompt)",
+    r"system\s+prompt\s+override",
     # System prompt extraction
     r"(reveal|show|print|output|repeat|tell me)\s+(your\s+)?(system\s+prompt|instructions?|rules?|configuration)",
     r"what\s+(are\s+your|is\s+your)\s+(system\s+|hidden\s+)?(prompt|instructions?|rules?)",
@@ -249,5 +250,14 @@ class GroundingGuardrails:
             has_any = any(args.get(f) for f in ["name", "email", "phone"])
             if not has_any:
                 return False, "save_contact_details requires at least one contact field."
+
+        elif tool_name == "book_appointment":
+            email = args.get("contact_email") or args.get("email")
+            if email and not re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$", str(email)):
+                return False, "book_appointment requires a valid contact_email."
+
+        elif tool_name == "request_warm_transfer":
+            if not args.get("reason"):
+                return False, "request_warm_transfer requires a reason."
 
         return True, ""

@@ -3,6 +3,8 @@ import type {
   Admin, Bot, BotDomain, KnowledgeDocument, Conversation,
   ConversationDetail, Lead, Handoff, DashboardStats,
   TenantSummary, AdminAccount, CreateTenantResult,
+  PhoneNumber, VoiceProfile, IvrBotConfig, CallRecord,
+  CallDetailResponse, ConsentRecord, DncEntry, CallCampaign,
 } from "./types";
 
 const TENANT_KEY = "orbitworks_active_tenant";
@@ -174,5 +176,92 @@ export const api = {
     request<Handoff>(`/admin/handoffs/${id}`, {
       method: "PATCH",
       body: JSON.stringify({ status }),
+    }),
+
+  // Voice & IVR
+  listPhoneNumbers: () => request<PhoneNumber[]>("/admin/voice/numbers"),
+  addPhoneNumber: (payload: {
+    phone_number: string;
+    bot_id?: string | null;
+    friendly_name?: string | null;
+    direction?: string;
+    configure_twilio_webhooks?: boolean;
+  }) =>
+    request<PhoneNumber>("/admin/voice/numbers", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  deletePhoneNumber: (id: string) =>
+    request<void>(`/admin/voice/numbers/${id}`, { method: "DELETE" }),
+
+  listVoiceProfiles: () => request<VoiceProfile[]>("/admin/voice/profiles"),
+  createVoiceProfile: (payload: {
+    name: string;
+    voice_id: string;
+    model_id?: string;
+    stability?: number;
+    similarity_boost?: number;
+  }) =>
+    request<VoiceProfile>("/admin/voice/profiles", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  deleteVoiceProfile: (id: string) =>
+    request<void>(`/admin/voice/profiles/${id}`, { method: "DELETE" }),
+
+  getBotVoiceConfig: (botId: string) =>
+    request<IvrBotConfig>(`/admin/voice/bots/${botId}/config`),
+  updateBotVoiceConfig: (botId: string, payload: Partial<IvrBotConfig>) =>
+    request<IvrBotConfig>(`/admin/voice/bots/${botId}/config`, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    }),
+
+  listCalls: (limit = 50) =>
+    request<CallRecord[]>(`/admin/voice/calls?limit=${limit}`),
+  getCallDetail: (callId: string) =>
+    request<CallDetailResponse>(`/admin/voice/calls/${callId}`),
+
+  listConsent: () => request<ConsentRecord[]>("/admin/voice/consent"),
+  grantConsent: (payload: {
+    phone_number: string;
+    consent_type?: string;
+    source?: string;
+    evidence_text?: string;
+  }) =>
+    request<ConsentRecord>("/admin/voice/consent", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  revokeConsent: (id: string) =>
+    request<void>(`/admin/voice/consent/${id}`, { method: "DELETE" }),
+
+  listDnc: () => request<DncEntry[]>("/admin/voice/dnc"),
+  addDnc: (payload: { phone_number: string; source?: string; reason?: string }) =>
+    request<DncEntry>("/admin/voice/dnc", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  removeDnc: (id: string) =>
+    request<void>(`/admin/voice/dnc/${id}`, { method: "DELETE" }),
+
+  listCampaigns: () => request<CallCampaign[]>("/admin/voice/campaigns"),
+  createCampaign: (payload: {
+    name: string;
+    bot_id: string;
+    campaign_type?: string;
+    call_reason?: string;
+    max_attempts?: number;
+    max_concurrent?: number;
+    phone_numbers?: string[];
+  }) =>
+    request<CallCampaign>("/admin/voice/campaigns", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  updateCampaign: (id: string, payload: { status?: string; name?: string }) =>
+    request<CallCampaign>(`/admin/voice/campaigns/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
     }),
 };

@@ -84,8 +84,11 @@ async def build_call_components(call: Dict[str, Any], store: CallStore, audio_si
     # Imported here so the gateway app (and its tests) load without the
     # Deepgram/ElevenLabs SDKs until a real call arrives.
     from ai.memory.memory_manager import MemoryManager
+    from ai.memory.call_memory import CallerHistoryLoader
     from ai.prompts.config import TenantConfigResolver
+    from ai.prompts.voice.script_config import resolve_voice_script
     from ai.rag.retrieval import SecurityEnforcedRetrieval
+    from ai.rag.voice_guardrails import VoiceGuardrails
     from ai.stt_tts.deepgram import DeepgramSTT
     from ai.stt_tts.elevenlabs import ElevenLabsTTS
     from ai.stt_tts.turn_manager import TurnManager, VoiceSession
@@ -106,6 +109,7 @@ async def build_call_components(call: Dict[str, Any], store: CallStore, audio_si
 
     ivr = await store.load_ivr_config(tenant_id, bot_id)
     profile = ivr.get("voice_profiles") or {}
+    voice_script = resolve_voice_script(ivr, bot)
 
     tts = ElevenLabsTTS()
     voice_id = profile.get("voice_id") or ivr.get("voice_id")
@@ -127,17 +131,20 @@ async def build_call_components(call: Dict[str, Any], store: CallStore, audio_si
     )
 
     direction = call.get("direction", "inbound")
+    caller_phone = call.get("to_number", "") if direction == "outbound" else call.get("from_number", "")
     tenant_config = {
         "business_name": bot.get("name", "our company"),
         "business_context": personality,
         "support_mode": bot.get("support_mode_enabled", True),
         "sales_mode": bot.get("sales_mode_enabled", True),
         "call_direction": direction,
+        "caller_phone": caller_phone,
+        "call_model": voice_script.call_model,
+        "voice_script_obj": voice_script,
     }
     if direction == "outbound":
         # The dial layer already enforced consent; passing caller_phone makes
         # the orchestrator re-check it at call start as a second gate.
-        tenant_config["caller_phone"] = call.get("to_number", "")
         tenant_config["call_reason"] = await store.get_call_reason(call_id, tenant_id)
 
     provider = StreamingProviderAdapter(_provider())
@@ -152,6 +159,9 @@ async def build_call_components(call: Dict[str, Any], store: CallStore, audio_si
         tenant_config=tenant_config,
         latency_cache=None,
         audio_sink=audio_sink,
+        voice_script=voice_script,
+        guardrails=VoiceGuardrails(),
+        history_loader=CallerHistoryLoader(supabase),
     )
 
     recording_enabled = (
@@ -168,5 +178,5 @@ async def build_call_components(call: Dict[str, Any], store: CallStore, audio_si
         recording_disclosure=(
             ivr.get("recording_disclosure_text") or DEFAULT_RECORDING_DISCLOSURE
         ) if recording_enabled else "",
-        model_used=DEFAULT_CALL_MODEL,
+        model_used=voice_script.call_model or DEFAULT_CALL_MODEL,
     )

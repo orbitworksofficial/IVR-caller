@@ -13,10 +13,12 @@ event loop free for audio frames on other live calls.
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+import os
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from supabase import Client
+from apps.voice_gateway import twilio_utils
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,8 @@ logger = logging.getLogger(__name__)
 _COST_TELEPHONY_PER_MIN = {"inbound": 0.0085, "outbound": 0.013}
 _COST_STT_PER_MIN = 0.0043
 _COST_TTS_PER_1K_CHARS = 0.10
+_DEFAULT_RETENTION_DAYS = 90
+_RECORDINGS_BUCKET = os.getenv("SUPABASE_RECORDINGS_BUCKET", "call-recordings")
 
 
 def _now_iso() -> str:
@@ -136,31 +140,94 @@ class CallStore:
         self, call_sid: str, recording_sid: str, recording_url: str, duration_s: Optional[int], status: str
     ) -> None:
         call = await self._run(
-            lambda: self.db.table("calls").select("id, tenant_id")
+            lambda: self.db.table("calls").select("id, tenant_id, bot_id")
             .eq("twilio_call_sid", call_sid).limit(1).execute()
         )
         if not call.data:
             logger.warning(f"Recording {recording_sid} for unknown call {call_sid}")
             return
-        call_id, tenant_id = call.data[0]["id"], call.data[0]["tenant_id"]
+        row = call.data[0]
+        call_id, tenant_id, bot_id = str(row["id"]), str(row["tenant_id"]), row.get("bot_id")
+
+        retention_days = _DEFAULT_RETENTION_DAYS
+        if bot_id:
+            cfg = await self.load_ivr_config(tenant_id, str(bot_id))
+            if cfg.get("recording_retention_days"):
+                retention_days = int(cfg["recording_retention_days"])
+        expires_at = (datetime.now(timezone.utc) + timedelta(days=retention_days)).isoformat()
+
+        storage_path: Optional[str] = None
+        if status == "completed" and recording_url:
+            audio_bytes = await twilio_utils.download_recording(recording_url)
+            if audio_bytes:
+                candidate_path = f"{tenant_id}/{call_id}/{recording_sid}.mp3"
+                try:
+                    await self._run(
+                        lambda: self.db.storage.from_(_RECORDINGS_BUCKET).upload(
+                            candidate_path,
+                            audio_bytes,
+                            {"content-type": "audio/mpeg", "upsert": "true"},
+                        )
+                    )
+                    storage_path = f"{_RECORDINGS_BUCKET}/{candidate_path}"
+                except Exception as e:
+                    logger.warning(f"Could not upload recording {recording_sid} to Supabase Storage: {e}")
+
+        rec_payload: Dict[str, Any] = {
+            "tenant_id": tenant_id,
+            "call_id": call_id,
+            "provider": "twilio",
+            "recording_sid": recording_sid,
+            "recording_url": recording_url,
+            "duration_s": duration_s,
+            "channels": 2,
+            "status": status,
+            "expires_at": expires_at,
+        }
+        if storage_path:
+            rec_payload["storage_path"] = storage_path
 
         await self._run(
-            lambda: self.db.table("call_recordings").upsert({
-                "tenant_id": tenant_id,
-                "call_id": call_id,
-                "provider": "twilio",
-                "recording_sid": recording_sid,
-                "recording_url": recording_url,
-                "duration_s": duration_s,
-                "channels": 2,
-                "status": status,
-            }, on_conflict="recording_sid").execute()
+            lambda: self.db.table("call_recordings").upsert(
+                rec_payload, on_conflict="recording_sid"
+            ).execute()
         )
         await self._run(
             lambda: self.db.table("calls")
             .update({"recording_url": recording_url, "recording_sid": recording_sid})
             .eq("id", call_id).eq("tenant_id", tenant_id).execute()
         )
+
+    async def purge_expired_recordings(self, now_iso: Optional[str] = None) -> int:
+        """
+        Phase 3 retention enforcement: removes expired recording audio from
+        Supabase Storage and marks `call_recordings.status = 'expired'`.
+        """
+        cutoff = now_iso or _now_iso()
+        res = await self._run(
+            lambda: self.db.table("call_recordings")
+            .select("id, tenant_id, storage_path")
+            .lte("expires_at", cutoff)
+            .neq("status", "expired")
+            .execute()
+        )
+        expired = res.data or []
+        purged = 0
+        for rec in expired:
+            sp = rec.get("storage_path")
+            if sp and "/" in sp:
+                bucket, obj_path = sp.split("/", 1)
+                try:
+                    await self._run(lambda b=bucket, p=obj_path: self.db.storage.from_(b).remove([p]))
+                except Exception as e:
+                    logger.warning(f"Could not delete storage object {sp}: {e}")
+            await self._run(
+                lambda rid=rec["id"], tid=rec["tenant_id"]: self.db.table("call_recordings")
+                .update({"status": "expired", "recording_url": None, "storage_path": None})
+                .eq("id", rid).eq("tenant_id", tid).execute()
+            )
+            purged += 1
+        return purged
 
     # ── Outbound / compliance ─────────────────────────────────────────────────
 
@@ -321,6 +388,15 @@ class CallStore:
         return outcome, status
 
     async def contact_status_counts(self, campaign_id: str) -> Dict[str, int]:
+        try:
+            rpc_res = await self._run(
+                lambda: self.db.rpc("get_campaign_contact_counts", {"p_campaign_id": campaign_id}).execute()
+            )
+            if rpc_res.data is not None:
+                return {str(row["status"]): int(row["count"]) for row in rpc_res.data}
+        except Exception as e:
+            logger.debug(f"get_campaign_contact_counts RPC unavailable, falling back to Python count: {e}")
+
         res = await self._run(
             lambda: self.db.table("campaign_contacts").select("status").eq("campaign_id", campaign_id).execute()
         )
@@ -415,3 +491,30 @@ class CallStore:
             )
         except Exception as e:
             logger.error(f"Failed to finalize call {call_id}: {e}")
+
+        # Phase 3: write per-call cost & latency telemetry into usage_events
+        turn_latencies = [
+            int(t["latency_ms"]) for t in turns
+            if t.get("speaker") == "agent" and t.get("latency_ms") is not None
+        ]
+        avg_latency = round(sum(turn_latencies) / len(turn_latencies)) if turn_latencies else 0
+        caller_words = sum(len(t["text"].split()) for t in turns if t["speaker"] == "caller")
+        agent_words = sum(len(t["text"].split()) for t in turns if t["speaker"] == "agent")
+        usage_payload = {
+            "tenant_id": tenant_id,
+            "call_id": call_id,
+            "model": model_used or "voice-pipeline",
+            "input_tokens": int(round(caller_words * 1.3)),
+            "output_tokens": int(round(agent_words * 1.3)),
+            "telephony_minutes": round(telephony_min, 3),
+            "stt_seconds": round(stt_seconds, 2),
+            "tts_characters": tts_chars,
+            "latency": avg_latency,
+            "latency_ms": avg_latency,
+            "estimated_cost": round(est_cost, 6),
+            "cost_usd": round(est_cost, 6),
+        }
+        try:
+            await self._run(lambda: self.db.table("usage_events").insert(usage_payload).execute())
+        except Exception as e:
+            logger.warning(f"Failed to log usage_events for call {call_id}: {e}")

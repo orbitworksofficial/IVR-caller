@@ -17,6 +17,7 @@ Run locally:
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 import hmac
 import logging
 import os
@@ -30,20 +31,12 @@ from apps.voice_gateway import twilio_utils
 from apps.voice_gateway.call_store import CallStore, _now_iso
 from apps.voice_gateway.components import build_call_components
 from apps.voice_gateway.campaign_runner import CampaignRunner, poll_interval, runner_enabled
+from apps.voice_gateway.monitoring import SlidingWindowRateLimiter, VoiceMonitor
 from apps.voice_gateway.outbound import place_outbound_call
 from apps.voice_gateway.session import CallSession
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
-
-app = FastAPI(title="OrbitWorks Voice Gateway", version="0.1.0")
-
-# Overridable in tests.
-app.state.store = None
-app.state.components_factory = build_call_components
-
-NOT_IN_SERVICE = "Sorry, this number is not currently in service. Goodbye."
-UNAVAILABLE = "Sorry, we can't take your call right now. Please try again shortly. Goodbye."
 
 
 REQUIRED_ENV = (
@@ -52,28 +45,57 @@ REQUIRED_ENV = (
 )
 
 
-@app.on_event("startup")
-async def _check_env() -> None:
+@asynccontextmanager
+async def _lifespan(application: FastAPI):
     missing = [k for k in REQUIRED_ENV if not os.getenv(k)]
     if missing:
         # Without TWILIO_AUTH_TOKEN every webhook fails signature checks (403),
         # so a misconfigured gateway rejects calls instead of half-working.
         logger.warning(f"Voice Gateway missing env: {', '.join(missing)} — calls will fail until set.")
 
-
-@app.on_event("startup")
-async def _start_campaign_runner() -> None:
     if runner_enabled():
-        app.state.campaign_task = asyncio.create_task(
+        application.state.campaign_task = asyncio.create_task(
             CampaignRunner(get_store()).run_forever(poll_interval())
         )
+    try:
+        yield
+    finally:
+        task = getattr(application.state, "campaign_task", None)
+        if task:
+            task.cancel()
 
 
-@app.on_event("shutdown")
-async def _stop_campaign_runner() -> None:
-    task = getattr(app.state, "campaign_task", None)
-    if task:
-        task.cancel()
+app = FastAPI(title="OrbitWorks Voice Gateway", version="0.2.0", lifespan=_lifespan)
+
+# Overridable in tests.
+app.state.store = None
+app.state.components_factory = build_call_components
+app.state.monitor = VoiceMonitor()
+app.state.rate_limiter = SlidingWindowRateLimiter(
+    max_requests=int(os.getenv("VOICE_RATE_LIMIT_PER_MIN", "120")),
+    window_seconds=60.0,
+)
+
+NOT_IN_SERVICE = "Sorry, this number is not currently in service. Goodbye."
+UNAVAILABLE = "Sorry, we can't take your call right now. Please try again shortly. Goodbye."
+AT_CAPACITY = "All of our lines are currently busy. Please try your call again shortly. Goodbye."
+
+
+def max_concurrent_calls() -> int:
+    return int(os.getenv("VOICE_MAX_CONCURRENT_CALLS", "50"))
+
+
+def get_monitor() -> VoiceMonitor:
+    if getattr(app.state, "monitor", None) is None:
+        app.state.monitor = VoiceMonitor()
+    return app.state.monitor
+
+
+def _enforce_gateway_rate_limit(key: str) -> None:
+    limiter: Optional[SlidingWindowRateLimiter] = getattr(app.state, "rate_limiter", None)
+    if limiter and not limiter.allow(key):
+        get_monitor().record_rate_limited(key)
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
 
 
 def get_store() -> CallStore:
@@ -106,13 +128,31 @@ async def _verified_form(request: Request) -> Dict[str, str]:
 
 @app.get("/voice/health")
 async def health():
-    return {"status": "ok", "service": "voice-gateway"}
+    snap = get_monitor().snapshot()
+    return {
+        "status": "ok",
+        "service": "voice-gateway",
+        "active_calls": snap["active_calls"],
+        "slo_healthy": snap["slo_healthy"],
+    }
+
+
+@app.get("/voice/metrics")
+async def metrics():
+    """Phase 3 monitoring & latency SLO telemetry endpoint."""
+    return get_monitor().snapshot()
 
 
 @app.post("/voice/inbound")
 async def inbound_call(request: Request):
     form = await _verified_form(request)
     call_sid, from_number, to_number = form.get("CallSid", ""), form.get("From", ""), form.get("To", "")
+    _enforce_gateway_rate_limit(f"inbound:{to_number or 'unknown'}")
+
+    if get_monitor().active_calls >= max_concurrent_calls():
+        logger.warning(f"Inbound call {call_sid} rejected: max concurrent calls ({max_concurrent_calls()}) reached")
+        return _twiml(twilio_utils.twiml_say_hangup(AT_CAPACITY))
+
     store = get_store()
 
     number = await store.find_inbound_number(to_number)
@@ -150,7 +190,7 @@ def _stream_twiml(call_id: str) -> Response:
 @app.websocket("/voice/stream")
 async def media_stream(ws: WebSocket):
     await ws.accept()
-    await CallSession(ws, get_store(), app.state.components_factory).run()
+    await CallSession(ws, get_store(), app.state.components_factory, get_monitor()).run()
 
 
 @app.post("/voice/status")
@@ -201,6 +241,8 @@ async def outbound_dial(body: DialRequest, x_voice_api_key: Optional[str] = Head
         raise HTTPException(status_code=503, detail="Outbound dialing is not enabled")
     if not x_voice_api_key or not hmac.compare_digest(x_voice_api_key, expected):
         raise HTTPException(status_code=401, detail="Invalid API key")
+
+    _enforce_gateway_rate_limit(f"outbound:{body.tenant_id}")
 
     result = await place_outbound_call(
         get_store(), body.tenant_id, body.bot_id, body.to_number, body.campaign_id, body.lead_id

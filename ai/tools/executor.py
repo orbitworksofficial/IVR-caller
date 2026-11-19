@@ -1,7 +1,9 @@
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+import httpx
 try:
     from supabase import Client
 except ImportError:
@@ -216,13 +218,44 @@ class ToolExecutor:
 
     # ── Voice / Call-specific tool handlers ────────────────────────────────────
 
+    async def _create_calendly_single_use_link(self) -> Optional[str]:
+        """
+        Phase 2/4 Calendly write integration: if CALENDLY_API_KEY and
+        CALENDLY_EVENT_TYPE_URI are configured, creates a single-use scheduling
+        link via the Calendly v2 API. Returns None if not configured or on error.
+        """
+        api_key = os.getenv("CALENDLY_API_KEY", "").strip()
+        event_uri = os.getenv("CALENDLY_EVENT_TYPE_URI", "").strip()
+        if not api_key or not event_uri:
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=8) as client:
+                resp = await client.post(
+                    "https://api.calendly.com/scheduling_links",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "max_event_count": 1,
+                        "owner": event_uri,
+                        "owner_type": "EventType",
+                    },
+                )
+            if resp.status_code < 300:
+                return resp.json().get("resource", {}).get("booking_url")
+            logger.warning(f"Calendly API returned {resp.status_code}: {resp.text}")
+        except Exception as e:
+            logger.warning(f"Calendly API call failed: {e}")
+        return None
+
     async def _book_appointment(
         self, args: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Book a Calendly appointment for the caller.
-        Returns the Calendly booking link; actual slot resolution is done by
-        Kashif's Calendly write-access integration via the booking_url on the bot.
+        Uses live Calendly single-use scheduling link if CALENDLY_API_KEY is
+        configured, falling back cleanly to the bot's booking_url.
         """
         try:
             resp = self.supabase.table("bots").select(
@@ -234,6 +267,10 @@ class ToolExecutor:
             if resp.data:
                 booking_url = resp.data[0].get("booking_url") or booking_url
                 bot_name = resp.data[0].get("name") or bot_name
+
+            live_link = await self._create_calendly_single_use_link()
+            if live_link:
+                booking_url = live_link
 
             contact_name = args.get("contact_name", "")
             service = args.get("service_of_interest", "a discovery call")
@@ -260,8 +297,8 @@ class ToolExecutor:
     ) -> Dict[str, Any]:
         """
         Reschedule an existing Calendly appointment.
-        Returns the booking link for rebooking; actual reschedule is done by
-        Kashif's Calendly integration once the caller opens the link.
+        Uses live Calendly single-use scheduling link if CALENDLY_API_KEY is
+        configured, falling back cleanly to the bot's booking_url.
         """
         try:
             resp = self.supabase.table("bots").select(
@@ -271,6 +308,10 @@ class ToolExecutor:
             booking_url = "https://calendly.com/orbitworksofficial01/30min"
             if resp.data and resp.data[0].get("booking_url"):
                 booking_url = resp.data[0]["booking_url"]
+
+            live_link = await self._create_calendly_single_use_link()
+            if live_link:
+                booking_url = live_link
 
             reason = args.get("reason", "")
             reason_text = f" I have noted: {reason}." if reason else ""
